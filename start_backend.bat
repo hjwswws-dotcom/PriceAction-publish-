@@ -7,5 +7,5 @@ echo.
 echo  Starting backend service...
 echo ============================================
 cd /d "%~dp0"
-python -m src.main
+python -m src.main --mode backend
 pause
