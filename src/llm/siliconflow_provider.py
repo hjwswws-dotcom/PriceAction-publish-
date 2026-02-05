@@ -229,9 +229,12 @@ class SiliconFlowProvider(LLMProvider):
                         f"Parse failed on attempt {attempt + 1}: {parse_result['error']}"
                     )
                     if attempt == self.max_retries - 1:
+                        # 降级方案：强制返回原始文本作为分析内容
+                        logger.warning("解析失败，尝试降级显示原始文本")
                         return {
-                            "success": False,
-                            "error": f"Parse failed: {parse_result['error']}",
+                            "success": True,  # 强制标记为 True
+                            "analysis_text": response_text,  # 把整段回复给前端
+                            "state": {},
                             "raw_response": response_text,
                         }
 

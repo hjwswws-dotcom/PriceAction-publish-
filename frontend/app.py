@@ -17,7 +17,7 @@ if str(frontend_dir) not in sys.path:
     sys.path.insert(0, str(frontend_dir))
 
 # 导入页面模块
-from frontend.pages import detailed_analysis, quick_overview
+from frontend.views import detailed_analysis, quick_overview
 
 # 页面配置
 st.set_page_config(
@@ -48,6 +48,10 @@ st.markdown(
 
 def main():
     """主函数 - 侧边栏导航"""
+    # 导航状态初始化
+    if "nav_choice" not in st.session_state:
+        st.session_state.nav_choice = "📊 详细分析"
+
     # 页面标题
     st.markdown('<div class="main-header">📊 AI价格行为分析系统</div>', unsafe_allow_html=True)
 
@@ -65,8 +69,22 @@ def main():
                 "📰 新闻信号",
             ],
             index=0,
+            key="main_nav_radio",
             help="详细分析: AI完整分析 | 快速概览: 状态表格 | 交易信号: 推荐/警告信号 | 风险计算器: AI风险评估 | 新闻信号: 实时新闻警报",
         )
+
+        st.divider()
+
+        # 缓存清理提示
+        st.subheader("🧹 缓存清理")
+        st.info(
+            "由于架构变更，建议点击右上角 **Clear cache** 清理旧缓存数据，以确保显示最新分析结果。"
+        )
+
+        if st.button("🧹 清理所有缓存"):
+            st.cache_data.clear()
+            st.success("缓存已清理！请刷新页面。")
+            st.rerun()
 
         st.divider()
 
@@ -90,17 +108,17 @@ def main():
         quick_overview.show()
     elif page == "🚨 交易信号":
         # 信号面板页面 - 使用相对路径
-        import frontend.pages.signals as signals_page
+        import frontend.views.signals as signals_page
 
         signals_page.main()
     elif page == "🎯 风险计算器":
         # 风险计算器页面
-        import frontend.pages.risk_calculator as risk_page
+        import frontend.views.risk_calculator as risk_page
 
         risk_page.show()
     elif page == "📰 新闻信号":
         # 新闻信号页面
-        import frontend.pages.news_signals as news_page
+        import frontend.views.news_signals as news_page
 
         news_page.main()
 

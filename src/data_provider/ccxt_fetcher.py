@@ -31,9 +31,7 @@ class CCXTFetcher:
                 result.append(
                     {
                         "timestamp": candle[0],
-                        "datetime": pd.to_datetime(candle[0], unit="ms").strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
+                        "datetime": pd.to_datetime(candle[0], unit="ms"),  # 保持为 Timestamp 对象
                         "open": float(candle[1]),
                         "high": float(candle[2]),
                         "low": float(candle[3]),

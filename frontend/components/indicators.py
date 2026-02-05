@@ -34,9 +34,7 @@ def calculate_swing_points(df: pd.DataFrame, window: int = 5) -> Dict:
         # 检查摆动高点
         high = df.iloc[i]["high"]
         is_swing_high = all(
-            high > df.iloc[j]["high"]
-            for j in range(i - window, i + window + 1)
-            if j != i
+            high > df.iloc[j]["high"] for j in range(i - window, i + window + 1) if j != i
         )
         if is_swing_high:
             swing_highs.append((i, high))
@@ -73,7 +71,7 @@ def add_indicators_to_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def identify_pattern_zones(
     df: pd.DataFrame,
-    pattern_name: str,
+    pattern_name: str = "Unknown",
     entry_price: Optional[float] = None,
     stop_price: Optional[float] = None,
     target_price: Optional[float] = None,

@@ -5,6 +5,7 @@ PriceAction 主入口模块
 import sys
 import time
 import threading
+import sqlite3
 from pathlib import Path
 
 # 添加src目录到路径
@@ -13,8 +14,111 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 
+def init_database():
+    """初始化数据库和表结构"""
+    db_path = "./data.db"
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # 检查 states 表是否存在
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='states'")
+    table_exists = cursor.fetchone()
+
+    if not table_exists:
+        # 创建完整的表结构
+        cursor.execute("""
+            CREATE TABLE states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                timeframe TEXT,
+                timestamp INTEGER,
+                marketCycle TEXT,
+                marketStructure TEXT,
+                signalConfidence INTEGER,
+                activeNarrative TEXT,
+                alternativeNarrative TEXT,
+                actionPlan TEXT,
+                volumeProfile TEXT,
+                keyLevels TEXT,
+                analysis_text TEXT,
+                raw_response TEXT,
+                last_updated INTEGER
+            )
+        """)
+
+        # 创建索引
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_states_symbol ON states(symbol)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_states_timeframe ON states(timeframe)")
+
+        conn.commit()
+        print("[DB] 数据库已初始化，states 表就绪")
+
+    conn.close()
+
+
+def _analyze_single_timeframe(symbol, tf, klines, db, llm):
+    """单周期降级分析"""
+    try:
+        current_state = db.get_state(symbol, tf)
+        result = llm.analyze(symbol, klines, current_state)
+
+        if result and result.get("success"):
+            _save_timeframe_state(symbol, tf, result, db, result)
+            current_price = klines[-1].get("close", 0) if klines else 0
+            print(f"  [OK] {symbol} {tf} @ {current_price:.2f} (降级)")
+        else:
+            print(f"  [ERROR] {symbol} {tf}: 单周期分析也失败")
+    except Exception as e:
+        print(f"  [ERROR] {symbol} {tf}: {e}")
+
+
+def _save_timeframe_state(symbol, tf, result, db, full_result):
+    """保存单周期分析结果到数据库"""
+    import json
+    import time
+
+    state = {
+        "symbol": symbol,
+        "timeframe": tf,
+        "marketCycle": result.get("marketCycle", "TRADING_RANGE"),
+        "activeNarrative": json.dumps(result.get("activeNarrative", {}), ensure_ascii=False),
+        "alternativeNarrative": json.dumps(
+            result.get("alternativeNarrative", {}), ensure_ascii=False
+        ),
+        "analysis_text": full_result.get("analysis_text", ""),
+        "actionPlan": json.dumps(result.get("actionPlan", {}), ensure_ascii=False),
+        "last_updated": int(time.time() * 1000),
+        "raw_response": full_result.get("raw_response", ""),
+    }
+
+    db._ensure_connection()
+    cursor = db._conn.cursor()
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO states
+        (symbol, timeframe, marketCycle, activeNarrative, alternativeNarrative, analysis_text, actionPlan, last_updated, raw_response)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+        (
+            state["symbol"],
+            state["timeframe"],
+            state["marketCycle"],
+            state["activeNarrative"],
+            state["alternativeNarrative"],
+            state["analysis_text"],
+            state["actionPlan"],
+            state["last_updated"],
+            state["raw_response"],
+        ),
+    )
+    db._conn.commit()
+
+
 def run_analysis_cycle(settings):
     """执行一次分析循环"""
+    # 初始化数据库
+    init_database()
+
     from database import DatabaseManager
     from src.data_provider.ccxt_fetcher import CCXTFetcher
     from src.llm.siliconflow_provider import SiliconFlowProvider
@@ -75,76 +179,70 @@ def run_analysis_cycle(settings):
     print(f"分析 {len(symbols)} 个交易对...")
 
     for symbol in symbols:
-        for tf in timeframes:
-            try:
-                # 1. 获取真实K线数据
+        print(f"正在分析 {symbol}...")
+
+        try:
+            # 1. 一次性获取所有周期的K线数据
+            timeframe_data = {}
+            for tf in ["15m", "1h", "1d"]:
                 klines = fetcher.fetch_ohlcv(symbol, timeframe=tf, limit=50)
+                if klines:
+                    timeframe_data[tf] = klines
+                    print(f"  获取 {tf} K线: {len(klines)} 根")
 
-                if klines is None or len(klines) == 0:
-                    print(f"  [ERROR] {symbol} {tf}: 无法获取K线数据")
-                    continue
+            if not timeframe_data:
+                print(f"  [ERROR] {symbol}: 无法获取任何K线数据")
+                continue
 
-                # 2. 调用AI分析
-                current_state = db.get_state(symbol, tf)
-                result = llm.analyze(symbol, klines, current_state)
+            # 2. 获取各周期当前状态
+            current_states = {}
+            for tf in timeframe_data.keys():
+                state = db.get_state(symbol, tf)
+                current_states[tf] = state
 
-                if result is None or not result.get("success"):
-                    print(
-                        f"  [ERROR] {symbol} {tf}: AI分析失败 - {result.get('error', '未知错误') if result else '返回为空'}"
+            # 3. 调用多周期AI分析（一次性分析所有周期）
+            print(f"  调用多周期分析...")
+            result = llm.analyze_multi_timeframe(symbol, timeframe_data, current_states)
+
+            if not result.get("success"):
+                print(f"  [ERROR] {symbol}: AI分析失败 - {result.get('error', '未知错误')}")
+                # 降级：尝试单周期分析
+                for tf, klines in timeframe_data.items():
+                    _analyze_single_timeframe(symbol, tf, klines, db, llm)
+                continue
+
+            # 4. 解析多周期结果
+            from src.core.response_parser import ResponseParser
+
+            parse_result = ResponseParser().parse_multi_timeframe(result.get("raw_response", ""))
+
+            if not parse_result.get("success"):
+                print(f"  [WARNING] {symbol}: 多周期解析失败，尝试降级")
+                for tf, klines in timeframe_data.items():
+                    _analyze_single_timeframe(symbol, tf, klines, db, llm)
+                continue
+
+            # 5. 保存每个周期的分析结果
+            timeframe_states = parse_result.get("timeframe_states", {})
+            for tf in timeframe_data.keys():
+                if tf in timeframe_states:
+                    _save_timeframe_state(symbol, tf, timeframe_states[tf], db, result)
+                    # 获取该周期最新价格
+                    current_price = (
+                        timeframe_data[tf][-1].get("close", 0) if timeframe_data[tf] else 0
                     )
-                    continue
+                    print(f"  [OK] {symbol} {tf} @ {current_price:.2f}")
+                else:
+                    # 该周期没有分析结果，单周期分析
+                    _analyze_single_timeframe(symbol, tf, timeframe_data[tf], db, llm)
 
-                # 3. 构建完整状态
-                state = {
-                    "symbol": symbol,
-                    "timeframe": tf,
-                    "marketCycle": result["state"].get("marketCycle", "TRADING_RANGE"),
-                    "activeNarrative": json.dumps(
-                        result["state"].get("activeNarrative", {}), ensure_ascii=False
-                    ),
-                    "alternativeNarrative": json.dumps(
-                        result["state"].get("alternativeNarrative", {}), ensure_ascii=False
-                    ),
-                    "analysis_text": result.get("analysis_text", ""),
-                    "actionPlan": json.dumps(
-                        result["state"].get("actionPlan", {}), ensure_ascii=False
-                    ),
-                    "last_updated": int(time.time() * 1000),
-                    "raw_response": result.get("raw_response", ""),
-                }
+            print(f"  {symbol} 多周期分析完成")
 
-                # 4. 保存到数据库
-                db._ensure_connection()
-                cursor = db._conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO states
-                    (symbol, timeframe, marketCycle, activeNarrative, alternativeNarrative, analysis_text, actionPlan, last_updated, raw_response)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        state["symbol"],
-                        state["timeframe"],
-                        state["marketCycle"],
-                        state["activeNarrative"],
-                        state["alternativeNarrative"],
-                        state["analysis_text"],
-                        state["actionPlan"],
-                        state["last_updated"],
-                        state["raw_response"],
-                    ),
-                )
-                db._conn.commit()
+        except Exception as e:
+            print(f"  [ERROR] {symbol}: {e}")
+            import traceback
 
-                # 获取最新价格
-                current_price = klines[-1].get("close", 0) if klines else 0
-                print(f"  [OK] {symbol} {tf} @ {current_price:.2f}")
-
-            except Exception as e:
-                print(f"  [ERROR] {symbol} {tf}: {e}")
-                import traceback
-
-                traceback.print_exc()
+            traceback.print_exc()
 
     db.close()
     print("分析完成")

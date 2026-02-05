@@ -23,6 +23,7 @@ import os
 from database import DatabaseManager
 from src.core.research_assistant import ResearchAssistant
 from src.core.risk_analyzer import RiskAnalyzer
+from src.config.settings import get_settings
 
 # 交易对列表
 SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "XAG/USDT:USDT", "XAU/USDT:USDT"]
@@ -50,7 +51,7 @@ def show():
     # 初始化
     @st.cache_resource
     def get_db_manager():
-        db = DatabaseManager("./data.db")
+        db = DatabaseManager(get_settings().database_path)
         db._ensure_connection()  # 确保在当前线程建立连接
         return db
 

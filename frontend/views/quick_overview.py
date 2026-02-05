@@ -13,6 +13,7 @@ if str(project_root) not in sys.path:
 
 import streamlit as st
 from database import DatabaseManager
+from src.config.settings import get_settings
 from datetime import datetime
 import json
 
@@ -43,9 +44,14 @@ def show():
     st.title("📘 实战行动手册 (Action Playbook)")
 
     # 获取所有状态
-    db = DatabaseManager("./data.db")
-    db._ensure_connection()  # 确保在当前线程建立连接
-    states = db.get_all_states()
+    try:
+        db = DatabaseManager(get_settings().database_path)
+        db._ensure_connection()  # 确保在当前线程建立连接
+        states = db.get_all_states()
+        db.close()
+    except Exception as e:
+        st.error(f"数据库连接失败: {e}")
+        return
 
     if not states:
         st.warning("暂无分析数据，请确保后端正在运行并完成首次分析")
@@ -69,18 +75,32 @@ def show():
             active = active_raw
 
         # 解析actionPlan，兜底从activeNarrative提取
-        if action:
-            state_enum = action.get("state", "WAIT")
-            direction = action.get("direction")
-            order_type = action.get("orderType")
-            entry_price = action.get("entryPrice")
-            stop_loss = action.get("stopLoss")
-            target_price = action.get("targetPrice")
-            win_rate = action.get("winRateEst")
-            suggested_position = action.get("suggestedPosition")
-            reason = action.get("reason", "")
-        else:
-            # 兜底逻辑：从activeNarrative推导
+        raw_action = state.get("actionPlan")
+        action = {}
+
+        if raw_action:
+            if isinstance(raw_action, str):
+                try:
+                    # 关键：将字符串转回字典
+                    action = json.loads(raw_action)
+                except Exception:
+                    action = {}
+            else:
+                action = raw_action
+
+        # 现在 action 确定是字典了，不再报错
+        state_enum = action.get("state", "WAIT")
+        direction = action.get("direction")
+        order_type = action.get("orderType")
+        entry_price = action.get("entryPrice")
+        stop_loss = action.get("stopLoss")
+        target_price = action.get("targetPrice")
+        win_rate = action.get("winRateEst")
+        suggested_position = action.get("suggestedPosition")
+        reason = action.get("reason", "")
+
+        # 兜底逻辑：从activeNarrative推导
+        if not raw_action:
             state_enum = "WAIT"
             direction = None
             order_type = None
@@ -166,7 +186,8 @@ def show():
                         st.session_state["risk_calc_winrate"] = win_rate
 
                         # 跳转到风险计算器
-                        st.switch_page("pages/risk_calculator.py")
+                        st.session_state.nav_choice = "🎯 风险计算器"
+                        st.rerun()
 
                 # 盈亏比自动计算
                 if entry_price and stop_loss and target_price:
@@ -211,9 +232,9 @@ with col_leg3:
 with col_leg4:
     st.error("🛑 **考虑离场**: 接近目标或触及止损位")
 
-# 刷新按钮
+    # 刷新按钮
 st.markdown("---")
-if st.button("🔄 刷新数据"):
+if st.button("🔄 刷新数据", key="refresh_data"):
     st.rerun()
 
 st.caption("💡 提示: 点击'一键计算风险'可跳转到风险计算器进行仓位规划")

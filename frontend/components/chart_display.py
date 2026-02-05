@@ -17,6 +17,9 @@ from plotly.subplots import make_subplots
 import pandas as pd
 from typing import List, Dict, Optional
 from datetime import datetime
+
+# 统一从Settings获取数据库路径
+from src.config.settings import get_settings
 from frontend.components.indicators import (
     add_indicators_to_df,
     calculate_swing_points,
@@ -31,7 +34,6 @@ def fetch_cached_klines(symbol: str, timeframe: str, limit: int):
     from src.data_provider.ccxt_fetcher import CCXTFetcher
 
     settings = get_settings()
-    # 确保使用 settings.proxy (对应 .env 中的 PRICEACTION_EXCHANGE_PROXY)
     fetcher = CCXTFetcher(
         exchange_id=settings.exchange_id, proxy=settings.proxy, options={"defaultType": "swap"}
     )
@@ -42,13 +44,28 @@ def fetch_cached_klines(symbol: str, timeframe: str, limit: int):
         st.error(f"无法获取 {symbol} 数据，请检查代理是否配置为 {settings.proxy}")
         return None
 
-    # 统一转换为 DataFrame，这是 Streamlit 绘图最稳的数据格式
+    # 统一转换为 DataFrame
     df = pd.DataFrame(data)
+
+    # 强制确保 datetime 列存在且为正确类型
+    if "datetime" not in df.columns:
+        if "timestamp" in df.columns:
+            df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
+        else:
+            st.error("❌ 数据源错误：找不到 datetime 或 timestamp 列")
+            return None
+
+    # 强制转换为 Timestamp 类型
+    df["datetime"] = pd.to_datetime(df["datetime"])
+
+    # 统一列名为小写
+    df.columns = [c.lower() for c in df.columns]
+
     return df
 
 
 def create_kline_chart(
-    klines: List[Dict],
+    klines,
     symbol: str,
     timeframe: str,
     key_levels: Optional[Dict] = None,
@@ -60,13 +77,37 @@ def create_kline_chart(
 ) -> go.Figure:
     """创建K线图"""
 
-    if klines is None or len(klines) == 0:
+    # 健壮性检查：支持 DataFrame 或 List[Dict]
+    if klines is None:
         raise ValueError("K线数据为空")
 
-    # 转换为DataFrame
-    df = pd.DataFrame(klines)
-    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df.set_index("datetime", inplace=True)
+    # 如果是 List[Dict]，转换为 DataFrame
+    if isinstance(klines, list):
+        df = pd.DataFrame(klines)
+    else:
+        df = klines.copy()
+
+    if df.empty:
+        raise ValueError("K线数据为空")
+
+    # 强制确保 datetime 列存在
+    if "datetime" not in df.columns:
+        if "timestamp" in df.columns:
+            df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
+        else:
+            raise ValueError("数据中缺少 datetime 或 timestamp 列")
+
+    # 强制转换为 Timestamp 类型
+    df["datetime"] = pd.to_datetime(df["datetime"])
+
+    # 统一列名为小写
+    df.columns = [c.lower() for c in df.columns]
+
+    # 排序
+    df = df.sort_values("datetime")
+
+    # 设置索引
+    df = df.set_index("datetime")
 
     # 添加技术指标
     if show_ema:
@@ -219,8 +260,9 @@ def display_chart_with_controls(
     # 尝试获取数据，优先从数据库获取
     try:
         from database import DatabaseManager
+        from src.config.settings import get_settings
 
-        db = DatabaseManager("./data.db")
+        db = DatabaseManager(get_settings().database_path)
         db._ensure_connection()
         state = db.get_state(symbol, timeframe)
         db.close()
@@ -241,8 +283,28 @@ def display_chart_with_controls(
 
         # klines 实际上是 DataFrame，需要用 .empty 检查
         if klines is None or (hasattr(klines, "empty") and klines.empty):
-            st.error(f"无法获取 {symbol} 的K线数据，请检查网络连接")
+            st.warning("📊 暂无 K 线数据")
             return
+
+        # --- 核心修复：强制对齐时间列 ---
+        # 1. 统一列名为小写
+        klines.columns = [c.lower() for c in klines.columns]
+
+        # 2. 如果没有 datetime 但有 timestamp，进行转换
+        if "datetime" not in klines.columns:
+            if "timestamp" in klines.columns:
+                # 这里的 unit='ms' 对应 CCXT 的毫秒时间戳
+                klines["datetime"] = pd.to_datetime(klines["timestamp"], unit="ms")
+            else:
+                st.error("❌ 数据源错误：找不到时间戳列 (datetime 或 timestamp)")
+                st.write("当前可用列:", klines.columns.tolist())
+                return
+
+        # 3. 强制确保 datetime 列是 Pandas 的时间类型（Plotly 绘图必须）
+        klines["datetime"] = pd.to_datetime(klines["datetime"])
+
+        # 4. 排序，确保图表从左到右是时间正序
+        klines = klines.sort_values("datetime")
 
         # 获取分析状态用于显示关键价位
         key_levels = None
@@ -250,8 +312,9 @@ def display_chart_with_controls(
 
         try:
             from database import DatabaseManager
+            from src.config.settings import get_settings
 
-            db = DatabaseManager("./data.db")
+            db = DatabaseManager(get_settings().database_path)
             db._ensure_connection()
             state = db.get_state(symbol, timeframe)
             db.close()
