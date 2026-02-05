@@ -9,6 +9,9 @@
 *.sqlite
 !data.db
 
+# Database module
+database/__pycache__/
+
 # Python
 __pycache__/
 *.py[cod]

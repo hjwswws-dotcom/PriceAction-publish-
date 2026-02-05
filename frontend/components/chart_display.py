@@ -19,21 +19,29 @@ from frontend.components.indicators import (
 @st.cache_data(ttl=300)  # 5分钟缓存
 def fetch_cached_klines(symbol: str, timeframe: str, limit: int):
     """带缓存的K线数据获取"""
-    # 导入和初始化在函数内部，避免序列化问题
-    from data.fetcher import DataFetcher
-    import json
+    # 使用项目的CCXT fetcher
+    from src.data_provider.ccxt_fetcher import CCXTFetcher
+    from src.config.settings import get_settings
+    import pandas as pd
 
-    with open("config/config.json", "r") as f:
-        config = json.load(f)
+    settings = get_settings()
 
-    fetcher = DataFetcher(
-        exchange_id=config["exchange"]["id"],
-        enable_rate_limit=config["exchange"].get("rate_limit", True),
-        proxy=config["exchange"].get("proxy"),
-        options=config["exchange"].get("options", {"defaultType": "swap"}),
+    fetcher = CCXTFetcher(
+        api_key=settings.binance_api_key or "",
+        secret=settings.binance_secret or "",
+        proxy=settings.proxy_url,
     )
 
-    return fetcher.fetch_ohlcv(symbol, timeframe, limit)
+    # 获取数据
+    data = fetcher.fetch_ohlcv(symbol, timeframe, limit)
+
+    # 转换为pandas DataFrame格式
+    if isinstance(data, pd.DataFrame):
+        return data.to_dict("records")
+    elif isinstance(data, list):
+        return data
+    else:
+        return []
 
 
 def create_kline_chart(
@@ -288,9 +296,7 @@ def create_kline_chart(
     # 更新Y轴格式
     fig.update_yaxes(title_text="价格", gridcolor="rgba(0,0,0,0.05)", row=1, col=1)
     if show_volume:
-        fig.update_yaxes(
-            title_text="成交量", gridcolor="rgba(0,0,0,0.05)", row=2, col=1
-        )
+        fig.update_yaxes(title_text="成交量", gridcolor="rgba(0,0,0,0.05)", row=2, col=1)
 
     fig.update_xaxes(gridcolor="rgba(0,0,0,0.05)")
 
