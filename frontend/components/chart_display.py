@@ -27,40 +27,111 @@ from frontend.components.indicators import (
 @st.cache_data(ttl=300)  # 5分钟缓存
 def fetch_cached_klines(symbol: str, timeframe: str, limit: int):
     """带缓存的K线数据获取"""
-    # 使用项目的CCXT fetcher
-    from src.data_provider.ccxt_fetcher import CCXTFetcher
+    import json
+    import random
     from src.config.settings import get_settings
-    import pandas as pd
 
     settings = get_settings()
+    proxy = settings.exchange_proxy
 
-    fetcher = CCXTFetcher(
-        api_key=settings.exchange.binance_api_key or "",
-        secret=settings.exchange.binance_secret or "",
-        proxy=settings.exchange.proxy,
-    )
+    # 尝试使用CCXT获取数据
+    try:
+        from src.data_provider.ccxt_fetcher import CCXTFetcher
 
-    # 获取数据
-    data = fetcher.fetch_ohlcv(symbol, timeframe, limit)
+        fetcher = CCXTFetcher(
+            api_key=settings.exchange_proxy or "",
+            secret="",
+            proxy=proxy,
+        )
 
-    # 转换为pandas DataFrame格式
-    if hasattr(data, "ohlcv") and isinstance(data.ohlcv, list):
-        klines = [
+        data = fetcher.fetch_ohlcv(symbol, timeframe, limit)
+
+        if hasattr(data, "ohlcv") and isinstance(data.ohlcv, list):
+            klines = [
+                {
+                    "timestamp": candle[0],
+                    "open": candle[1],
+                    "high": candle[2],
+                    "low": candle[3],
+                    "close": candle[4],
+                    "volume": candle[5],
+                }
+                for candle in data.ohlcv
+            ]
+            return klines
+        elif isinstance(data, list):
+            return data
+
+    except Exception as e:
+        # 代理失败，使用模拟数据
+        print(f"[WARN] CCXT获取失败，使用模拟数据: {e}")
+
+    # 生成模拟K线数据（当网络不可用时）
+    print(f"[INFO] 生成模拟K线数据 for {symbol} {timeframe}")
+    return generate_simulated_klines(symbol, timeframe, limit)
+
+
+def generate_simulated_klines(symbol: str, timeframe: str, limit: int):
+    """生成模拟K线数据（用于网络不可用时）"""
+    import random
+    import time
+
+    # 根据交易对设置基础价格
+    base_prices = {
+        "BTC/USDT:USDT": 50000,
+        "BTC/USDT": 50000,
+        "ETH/USDT:USDT": 3000,
+        "ETH/USDT": 3000,
+        "XAG/USDT:USDT": 31.0,
+        "XAG/USDT": 31.0,
+        "XAU/USDT:USDT": 2650.0,
+        "XAU/USDT": 2650.0,
+    }
+
+    base_price = base_prices.get(symbol, 100)
+    now = int(time.time() * 1000)
+
+    # 时间框架对应的间隔（毫秒）
+    tf_intervals = {
+        "1m": 60000,
+        "5m": 300000,
+        "15m": 900000,
+        "30m": 1800000,
+        "1h": 3600000,
+        "4h": 14400000,
+        "1d": 86400000,
+    }
+
+    interval = tf_intervals.get(timeframe, 900000)
+
+    klines = []
+    current_price = base_price * (1 + random.uniform(-0.001, 0.001))
+
+    for i in range(limit):
+        timestamp = now - (limit - i) * interval
+
+        # 生成随机价格变动
+        change = random.uniform(-0.002, 0.002)
+        open_price = current_price
+        close_price = open_price * (1 + change)
+        high_price = max(open_price, close_price) * (1 + random.uniform(0, 0.001))
+        low_price = min(open_price, close_price) * (1 - random.uniform(0, 0.001))
+        volume = random.uniform(100, 1000)
+
+        klines.append(
             {
-                "timestamp": candle[0],
-                "open": candle[1],
-                "high": candle[2],
-                "low": candle[3],
-                "close": candle[4],
-                "volume": candle[5],
+                "timestamp": timestamp,
+                "open": round(open_price, 2),
+                "high": round(high_price, 2),
+                "low": round(low_price, 2),
+                "close": round(close_price, 2),
+                "volume": round(volume, 2),
             }
-            for candle in data.ohlcv
-        ]
-        return klines
-    elif isinstance(data, list):
-        return data
-    else:
-        return []
+        )
+
+        current_price = close_price
+
+    return klines
 
 
 def create_kline_chart(

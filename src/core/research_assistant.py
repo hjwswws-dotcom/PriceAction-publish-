@@ -14,9 +14,9 @@ class ResearchAssistant:
         """Initialize research assistant"""
         self.settings = get_settings()
         self.fetcher = CCXTFetcher(
-            api_key=self.settings.binance_api_key or "",
-            secret=self.settings.binance_secret or "",
-            proxy=self.settings.proxy_url,
+            api_key=self.settings.exchange_proxy or "",
+            secret="",
+            proxy=self.settings.exchange_proxy,
         )
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 50):
