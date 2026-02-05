@@ -11,7 +11,7 @@ class CCXTFetcher(BaseDataProvider):
     """CCXT-based data fetcher"""
 
     def __init__(self, api_key: str = "", secret: str = "", proxy: str = None):
-        self.name = "ccxt"
+        self._name = "ccxt"
         self.exchange = ccxt.binance(
             {
                 "apiKey": api_key,
@@ -23,11 +23,9 @@ class CCXTFetcher(BaseDataProvider):
 
     @property
     def name(self) -> str:
-        return "ccxt"
+        return self._name
 
-    def fetch_ohlcv(
-        self, symbol: str, timeframe: str = "15m", limit: int = 100
-    ) -> MarketData:
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "15m", limit: int = 100) -> MarketData:
         ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         return MarketData(
             symbol=symbol,
