@@ -26,112 +26,39 @@ from frontend.components.indicators import (
 
 @st.cache_data(ttl=300)  # 5分钟缓存
 def fetch_cached_klines(symbol: str, timeframe: str, limit: int):
-    """带缓存的K线数据获取"""
-    import json
-    import random
+    """获取K线数据（无fallback，数据获取失败则抛出异常）"""
     from src.config.settings import get_settings
+    from src.data_provider.ccxt_fetcher import CCXTFetcher
 
     settings = get_settings()
     proxy = settings.exchange_proxy
 
-    # 尝试使用CCXT获取数据
-    try:
-        from src.data_provider.ccxt_fetcher import CCXTFetcher
+    fetcher = CCXTFetcher(
+        api_key=proxy or "",
+        secret="",
+        proxy=proxy,
+    )
 
-        fetcher = CCXTFetcher(
-            api_key=settings.exchange_proxy or "",
-            secret="",
-            proxy=proxy,
-        )
+    data = fetcher.fetch_ohlcv(symbol, timeframe, limit)
 
-        data = fetcher.fetch_ohlcv(symbol, timeframe, limit)
-
-        if hasattr(data, "ohlcv") and isinstance(data.ohlcv, list):
-            klines = [
-                {
-                    "timestamp": candle[0],
-                    "open": candle[1],
-                    "high": candle[2],
-                    "low": candle[3],
-                    "close": candle[4],
-                    "volume": candle[5],
-                }
-                for candle in data.ohlcv
-            ]
-            return klines
-        elif isinstance(data, list):
-            return data
-
-    except Exception as e:
-        # 代理失败，使用模拟数据
-        print(f"[WARN] CCXT获取失败，使用模拟数据: {e}")
-
-    # 生成模拟K线数据（当网络不可用时）
-    print(f"[INFO] 生成模拟K线数据 for {symbol} {timeframe}")
-    return generate_simulated_klines(symbol, timeframe, limit)
-
-
-def generate_simulated_klines(symbol: str, timeframe: str, limit: int):
-    """生成模拟K线数据（用于网络不可用时）"""
-    import random
-    import time
-
-    # 根据交易对设置基础价格
-    base_prices = {
-        "BTC/USDT:USDT": 50000,
-        "BTC/USDT": 50000,
-        "ETH/USDT:USDT": 3000,
-        "ETH/USDT": 3000,
-        "XAG/USDT:USDT": 31.0,
-        "XAG/USDT": 31.0,
-        "XAU/USDT:USDT": 2650.0,
-        "XAU/USDT": 2650.0,
-    }
-
-    base_price = base_prices.get(symbol, 100)
-    now = int(time.time() * 1000)
-
-    # 时间框架对应的间隔（毫秒）
-    tf_intervals = {
-        "1m": 60000,
-        "5m": 300000,
-        "15m": 900000,
-        "30m": 1800000,
-        "1h": 3600000,
-        "4h": 14400000,
-        "1d": 86400000,
-    }
-
-    interval = tf_intervals.get(timeframe, 900000)
-
-    klines = []
-    current_price = base_price * (1 + random.uniform(-0.001, 0.001))
-
-    for i in range(limit):
-        timestamp = now - (limit - i) * interval
-
-        # 生成随机价格变动
-        change = random.uniform(-0.002, 0.002)
-        open_price = current_price
-        close_price = open_price * (1 + change)
-        high_price = max(open_price, close_price) * (1 + random.uniform(0, 0.001))
-        low_price = min(open_price, close_price) * (1 - random.uniform(0, 0.001))
-        volume = random.uniform(100, 1000)
-
-        klines.append(
+    # 转换为字典列表格式
+    if hasattr(data, "ohlcv") and isinstance(data.ohlcv, list):
+        klines = [
             {
-                "timestamp": timestamp,
-                "open": round(open_price, 2),
-                "high": round(high_price, 2),
-                "low": round(low_price, 2),
-                "close": round(close_price, 2),
-                "volume": round(volume, 2),
+                "timestamp": candle[0],
+                "open": candle[1],
+                "high": candle[2],
+                "low": candle[3],
+                "close": candle[4],
+                "volume": candle[5],
             }
-        )
-
-        current_price = close_price
-
-    return klines
+            for candle in data.ohlcv
+        ]
+        return klines
+    elif isinstance(data, list):
+        return data
+    else:
+        raise ConnectionError(f"无法获取 {symbol} K线数据，请检查网络和代理设置")
 
 
 def create_kline_chart(
@@ -145,250 +72,159 @@ def create_kline_chart(
     show_swing_points: bool = True,
     show_zones: bool = True,
 ) -> go.Figure:
-    """
-    创建K线图
+    """创建K线图"""
 
-    Args:
-        klines: OHLCV数据列表
-        symbol: 交易对名称
-        timeframe: 时间框架
-        key_levels: 关键价位 {'entry_trigger': float, 'invalidation_level': float, 'profit_target_1': float}
-        pattern_info: 形态信息 {'pattern_name': str, 'comment': str}
-        show_ema: 是否显示EMA均线
-        show_volume: 是否显示成交量
-        show_swing_points: 是否标记摆动高低点
-        show_zones: 是否显示形态区域高亮
+    if not klines:
+        raise ValueError("K线数据为空")
 
-    Returns:
-        Plotly Figure对象
-    """
     # 转换为DataFrame
     df = pd.DataFrame(klines)
-    # 转换为本地时间显示（从UTC）
-    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert(
-        "Asia/Shanghai"
-    )
+    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df.set_index("datetime", inplace=True)
 
     # 添加技术指标
     if show_ema:
         df = add_indicators_to_df(df)
 
-    # 创建子图布局 (K线图 + 成交量)
-    if show_volume:
-        fig = make_subplots(
-            rows=2,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.03,
-            row_heights=[0.8, 0.2],
-            subplot_titles=(f"{symbol} {timeframe}", "Volume"),
-        )
-    else:
-        fig = go.Figure()
+    # 计算摆动点
+    swing_points = calculate_swing_points(df) if show_swing_points else []
 
-    # 添加形态区域高亮（在K线之前，确保在底层）
-    if show_zones and pattern_info:
-        zones = identify_pattern_zones(
-            df,
-            pattern_name=pattern_info.get("pattern_name", ""),
-            entry_price=key_levels.get("entry_trigger") if key_levels else None,
-            stop_price=key_levels.get("invalidation_level") if key_levels else None,
-            target_price=key_levels.get("profit_target_1") if key_levels else None,
-        )
+    # 识别形态区域
+    pattern_zones = identify_pattern_zones(df) if show_zones else []
 
-        for zone in zones:
-            fig.add_vrect(
-                x0=zone["x0"],
-                x1=zone["x1"],
-                y0=zone["y0"],
-                y1=zone["y1"],
-                fillcolor=zone["color"],
-                line_width=1,
-                line_dash="dot",
-                line_color=zone["color"].replace("0.15", "0.5").replace("0.1", "0.4"),
-                opacity=1,
-                annotation_text=zone["name"],
-                annotation_position="top left",
-                annotation_font_size=10,
-                row=1,
-                col=1,
-            )
-
-    # 添加K线
-    candlestick = go.Candlestick(
-        x=df["datetime"],
-        open=df["open"],
-        high=df["high"],
-        low=df["low"],
-        close=df["close"],
-        name="K线",
-        increasing_line_color="#26a69a",
-        decreasing_line_color="#ef5350",
+    # 创建图表
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.7, 0.3],
+        subplot_titles=(f"{symbol} {timeframe} - K线图", "成交量"),
     )
 
-    if show_volume:
-        fig.add_trace(candlestick, row=1, col=1)
-    else:
-        fig.add_trace(candlestick)
+    # K线
+    fig.add_trace(
+        go.Candlestick(
+            x=df.index,
+            open=df["open"],
+            high=df["high"],
+            low=df["low"],
+            close=df["close"],
+            name="K线",
+            increasing_line_color="#26a69a",
+            decreasing_line_color="#ef5350",
+        ),
+        row=1,
+        col=1,
+    )
 
-    # 添加EMA均线
-    if show_ema and "ema20" in df.columns and "ema50" in df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=df["datetime"],
-                y=df["ema20"],
-                mode="lines",
-                name="EMA20",
-                line=dict(color="#2196f3", width=1.5),
-            ),
-            row=1,
-            col=1,
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df["datetime"],
-                y=df["ema50"],
-                mode="lines",
-                name="EMA50",
-                line=dict(color="#ff9800", width=1.5),
-            ),
-            row=1,
-            col=1,
-        )
-
-    # 添加摆动高低点标记
-    if show_swing_points:
-        swing_points = calculate_swing_points(df, window=3)
-
-        # 摆动高点
-        if swing_points["swing_highs"]:
-            high_indices, high_prices = zip(*swing_points["swing_highs"])
-            high_dates = df.iloc[list(high_indices)]["datetime"].tolist()
-            fig.add_trace(
-                go.Scatter(
-                    x=high_dates,
-                    y=high_prices,
-                    mode="markers",
-                    name="Swing High",
-                    marker=dict(
-                        symbol="triangle-down",
-                        size=12,
-                        color="#ff5252",
-                        line=dict(width=2, color="white"),
-                    ),
-                ),
-                row=1,
-                col=1,
-            )
-
-        # 摆动低点
-        if swing_points["swing_lows"]:
-            low_indices, low_prices = zip(*swing_points["swing_lows"])
-            low_dates = df.iloc[list(low_indices)]["datetime"].tolist()
-            fig.add_trace(
-                go.Scatter(
-                    x=low_dates,
-                    y=low_prices,
-                    mode="markers",
-                    name="Swing Low",
-                    marker=dict(
-                        symbol="triangle-up",
-                        size=12,
-                        color="#69f0ae",
-                        line=dict(width=2, color="white"),
-                    ),
-                ),
-                row=1,
-                col=1,
-            )
-
-    # 添加关键价位水平线
-    if key_levels:
+    # 关键价位
+    if key_levels and any(key_levels.values()):
         colors = {
-            "entry_trigger": "#2196f3",  # 蓝色
-            "invalidation_level": "#f44336",  # 红色
-            "profit_target_1": "#4caf50",  # 绿色
+            "entry_trigger": "#2196F3",
+            "invalidation_level": "#f44336",
+            "profit_target_1": "#4CAF50",
         }
-        dash_styles = {
-            "entry_trigger": "solid",
-            "invalidation_level": "dash",
-            "profit_target_1": "dot",
-        }
-        names = {
-            "entry_trigger": "🎯 入场",
-            "invalidation_level": "🛑 止损",
-            "profit_target_1": "💰 目标",
-        }
+        for level_name, price in key_levels.items():
+            if price and price > 0:
+                color = colors.get(level_name, "#9E9E9E")
+                level_label = {
+                    "entry_trigger": "入场",
+                    "invalidation_level": "止损",
+                    "profit_target_1": "止盈",
+                }.get(level_name, level_name)
 
-        for key, value in key_levels.items():
-            if value and value > 0:
                 fig.add_hline(
-                    y=value,
-                    line_dash=dash_styles.get(key, "dash"),
-                    line_color=colors.get(key, "#666"),
-                    line_width=2,
-                    annotation_text=f"{names.get(key, key)}: ${value:,.2f}",
-                    annotation_position="right",
-                    annotation_font_size=11,
-                    annotation_font_color=colors.get(key, "#666"),
+                    y=price,
+                    line=dict(color=color, width=2, dash="dash"),
                     row=1,
                     col=1,
+                    annotation_text=f"{level_label}: {price:,.2f}",
+                    annotation_position="top right",
                 )
 
-    # 添加成交量
+    # 摆动高点和低点
+    if swing_points:
+        highs = [p for p in swing_points if p["type"] == "high"]
+        lows = [p for p in swing_points if p["type"] == "low"]
+
+        if highs:
+            fig.add_trace(
+                go.Scatter(
+                    x=[p["time"] for p in highs],
+                    y=[p["price"] for p in highs],
+                    mode="markers",
+                    marker=dict(symbol="triangle-down", size=8, color="#ef5350"),
+                    name="摆动高点",
+                ),
+                row=1,
+                col=1,
+            )
+
+        if lows:
+            fig.add_trace(
+                go.Scatter(
+                    x=[p["time"] for p in lows],
+                    y=[p["price"] for p in lows],
+                    mode="markers",
+                    marker=dict(symbol="triangle-up", size=8, color="#26a69a"),
+                    name="摆动低点",
+                ),
+                row=1,
+                col=1,
+            )
+
+    # 形态区域
+    if pattern_zones:
+        for zone in pattern_zones[:5]:
+            fig.add_vrect(
+                x0=zone["start"],
+                x1=zone["end"],
+                fillcolor=zone.get("color", "#9E9E9E"),
+                opacity=0.2,
+                line_width=0,
+                row=1,
+                col=1,
+            )
+
+    # EMA均线
+    if show_ema and "EMA_20" in df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["EMA_20"],
+                mode="lines",
+                line=dict(color="#FF9800", width=1.5),
+                name="EMA20",
+            ),
+            row=1,
+            col=1,
+        )
+
+    # 成交量
     if show_volume:
         colors = [
             "#26a69a" if close >= open else "#ef5350"
-            for close, open in zip(df["close"], df["open"])
+            for open, close in zip(df["open"], df["close"])
         ]
         fig.add_trace(
-            go.Bar(
-                x=df["datetime"],
-                y=df["volume"],
-                name="成交量",
-                marker_color=colors,
-                opacity=0.7,
-            ),
+            go.Bar(x=df.index, y=df["volume"], marker_color=colors, name="成交量"),
             row=2,
             col=1,
         )
 
-    # 更新布局
+    # 布局
     fig.update_layout(
-        title=dict(
-            text=f"{symbol} {timeframe} K线图",
-            font=dict(size=16),
-            x=0.5,
-            xanchor="center",
-        ),
-        xaxis_title="时间",
-        yaxis_title="价格",
-        height=650 if show_volume else 550,
-        template="plotly_white",
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            bgcolor="rgba(255,255,255,0.8)",
-            bordercolor="rgba(0,0,0,0.1)",
-            borderwidth=1,
-        ),
         xaxis_rangeslider_visible=False,
-        hovermode="x unified",
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        margin=dict(l=60, r=60, t=80, b=60),
+        height=700,
+        template="plotly_dark",
+        margin=dict(l=50, r=50, t=50, b=50),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 
-    # 更新Y轴格式
-    fig.update_yaxes(title_text="价格", gridcolor="rgba(0,0,0,0.05)", row=1, col=1)
-    if show_volume:
-        fig.update_yaxes(title_text="成交量", gridcolor="rgba(0,0,0,0.05)", row=2, col=1)
-
-    fig.update_xaxes(gridcolor="rgba(0,0,0,0.05)")
+    fig.update_xaxes(row=1, col=1, rangeslider=dict(visible=False))
+    fig.update_xaxes(row=2, col=1, title_text="时间")
 
     return fig
 
@@ -399,45 +235,10 @@ def display_chart_with_controls(
     pattern_info: Optional[Dict] = None,
     default_timeframe: str = "15m",
 ):
-    """
-    显示带控制面板的K线图
+    """显示交互式K线图（带控制面板）"""
 
-    Args:
-        symbol: 交易对
-        key_levels: AI分析的关键价位
-        pattern_info: 形态信息
-        default_timeframe: 默认时间框架
-    """
     # 控制面板
-    st.markdown("**📊 图表控制**")
-    col1, col2, col3, col4 = st.columns([2, 2, 2, 4])
-
-    with col1:
-        timeframe = st.selectbox(
-            "时间框架",
-            options=["15m", "1h", "4h", "1d"],
-            index=["15m", "1h", "4h", "1d"].index(default_timeframe)
-            if default_timeframe in ["15m", "1h", "4h", "1d"]
-            else 0,
-            key=f"timeframe_{symbol}",
-        )
-
-    with col2:
-        limit = st.slider(
-            "K线数量",
-            min_value=30,
-            max_value=200,
-            value=100,
-            step=10,
-            key=f"limit_{symbol}",
-        )
-
-    with col3:
-        st.markdown("<br>", unsafe_allow_html=True)
-        refresh = st.button("🔄 刷新", key=f"refresh_{symbol}", width="stretch")
-
-    # 图表选项
-    with st.expander("⚙️ 显示选项", expanded=False):
+    with st.expander("图表设置", expanded=False):
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             show_ema = st.checkbox("EMA均线", value=True, key=f"ema_{symbol}")
@@ -449,58 +250,54 @@ def display_chart_with_controls(
             show_zones = st.checkbox("形态区域", value=True, key=f"zones_{symbol}")
 
     # 获取数据
-    try:
-        with st.spinner("📡 加载K线数据..."):
-            if refresh:
-                fetch_cached_klines.clear()
-            klines = fetch_cached_klines(symbol, timeframe, limit)
-
-        if not klines:
-            st.error("❌ 无法获取K线数据")
+    with st.spinner("加载K线数据..."):
+        try:
+            klines = fetch_cached_klines(symbol, default_timeframe, 50)
+        except Exception as e:
+            st.error(f"获取数据失败: {e}")
+            st.info("请检查: 1) VPN代理是否开启 2) 代理端口是否正确 (10806)")
             return
 
-        # 创建图表
-        fig = create_kline_chart(
-            klines=klines,
-            symbol=symbol,
-            timeframe=timeframe,
-            key_levels=key_levels,
-            pattern_info=pattern_info,
-            show_ema=show_ema,
-            show_volume=show_volume,
-            show_swing_points=show_swing,
-            show_zones=show_zones,
-        )
+    if not klines:
+        st.error("K线数据为空")
+        return
 
-        # 显示图表
-        st.plotly_chart(
-            fig,
-            width="stretch",
-            config={
-                "displayModeBar": True,
-                "modeBarButtonsToAdd": ["drawline", "drawopenpath", "eraseshape"],
-                "displaylogo": False,
-            },
-        )
+    # 创建图表
+    fig = create_kline_chart(
+        klines=klines,
+        symbol=symbol,
+        timeframe=default_timeframe,
+        key_levels=key_levels,
+        pattern_info=pattern_info,
+        show_ema=show_ema,
+        show_volume=show_volume,
+        show_swing_points=show_swing,
+        show_zones=show_zones,
+    )
 
-        # 显示统计信息
-        df = pd.DataFrame(klines)
+    st.plotly_chart(
+        fig,
+        width="stretch",
+        config={
+            "displayModeBar": True,
+            "modeBarButtonsToAdd": ["drawline", "drawopenpath", "eraseshape"],
+            "displaylogo": False,
+        },
+    )
 
-        st.markdown("**📈 数据统计**")
-        cols = st.columns(5)
-        with cols[0]:
-            st.metric("当前", f"${df['close'].iloc[-1]:,.2f}")
-        with cols[1]:
-            st.metric("最高", f"${df['high'].max():,.2f}")
-        with cols[2]:
-            st.metric("最低", f"${df['low'].min():,.2f}")
-        with cols[3]:
-            change = df["close"].iloc[-1] - df["close"].iloc[0]
-            change_pct = (change / df["close"].iloc[0]) * 100
-            st.metric("涨跌", f"{change:+.2f}", f"{change_pct:+.2f}%")
-        with cols[4]:
-            st.metric("成交量", f"{df['volume'].sum():,.0f}")
-
-    except Exception as e:
-        st.error(f"❌ 加载图表失败: {e}")
-        st.exception(e)
+    # 统计信息
+    df = pd.DataFrame(klines)
+    st.markdown("**数据统计**")
+    cols = st.columns(5)
+    with cols[0]:
+        st.metric("当前", f"${df['close'].iloc[-1]:,.2f}")
+    with cols[1]:
+        st.metric("最高", f"${df['high'].max():,.2f}")
+    with cols[2]:
+        st.metric("最低", f"${df['low'].min():,.2f}")
+    with cols[3]:
+        change = df["close"].iloc[-1] - df["close"].iloc[0]
+        change_pct = (change / df["close"].iloc[0]) * 100
+        st.metric("涨跌", f"{change:+.2f}", f"{change_pct:+.2f}%")
+    with cols[4]:
+        st.metric("成交量", f"{df['volume'].iloc[-1]:,.0f}")
