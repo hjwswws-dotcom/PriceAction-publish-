@@ -35,17 +35,28 @@ def fetch_cached_klines(symbol: str, timeframe: str, limit: int):
     settings = get_settings()
 
     fetcher = CCXTFetcher(
-        api_key=settings.binance_api_key or "",
-        secret=settings.binance_secret or "",
-        proxy=settings.proxy_url,
+        api_key=settings.exchange.binance_api_key or "",
+        secret=settings.exchange.binance_secret or "",
+        proxy=settings.exchange.proxy,
     )
 
     # 获取数据
     data = fetcher.fetch_ohlcv(symbol, timeframe, limit)
 
     # 转换为pandas DataFrame格式
-    if isinstance(data, pd.DataFrame):
-        return data.to_dict("records")
+    if hasattr(data, "ohlcv") and isinstance(data.ohlcv, list):
+        klines = [
+            {
+                "timestamp": candle[0],
+                "open": candle[1],
+                "high": candle[2],
+                "low": candle[3],
+                "close": candle[4],
+                "volume": candle[5],
+            }
+            for candle in data.ohlcv
+        ]
+        return klines
     elif isinstance(data, list):
         return data
     else:
