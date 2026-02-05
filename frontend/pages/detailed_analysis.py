@@ -40,6 +40,16 @@ def show():
         st.error("无法获取选定交易对的数据")
         return
 
+    # 解析JSON字段
+    import json
+
+    active_raw = state.get("activeNarrative", "{}")
+    active = json.loads(active_raw) if isinstance(active_raw, str) else (active_raw or {})
+    alternative_raw = state.get("alternativeNarrative", "{}")
+    alternative = (
+        json.loads(alternative_raw) if isinstance(alternative_raw, str) else (alternative_raw or {})
+    )
+
     # 显示更新时间和市场周期
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
@@ -67,13 +77,16 @@ def show():
     # === K线图表区域（新增）===
     st.markdown("### 📈 K线图表与AI信号")
 
-    # 提取关键价位和形态信息
-    active = state.get("activeNarrative", {})
+    # 提取关键价位和形态信息（使用已解析的active）
     levels = active.get("key_levels", {})
     key_levels = {
         "entry_trigger": levels.get("entry_trigger", 0),
         "invalidation_level": levels.get("invalidation_level", 0),
         "profit_target_1": levels.get("profit_target_1", 0),
+    }
+    pattern_info = {
+        "pattern_name": active.get("pattern_name", ""),
+        "comment": active.get("comment", ""),
     }
     pattern_info = {
         "pattern_name": active.get("pattern_name", ""),
@@ -105,9 +118,6 @@ def show():
     # 显示关键价位
     st.markdown("### 🎯 关键价位")
     col1, col2, col3 = st.columns(3)
-    active = state.get("activeNarrative", {})
-    levels = active.get("key_levels", {})
-
     with col1:
         entry = levels.get("entry_trigger", 0)
         if entry:
@@ -179,7 +189,7 @@ def show():
             st.write(f"- 说明: {comment}")
 
     with col2:
-        alternative = state.get("alternativeNarrative", {})
+        alternative = alternative  # 使用已解析的变量
         st.markdown("**备选剧本:**")
         st.write(f"- 名称: {alternative.get('pattern_name', 'None')}")
         trigger = alternative.get("trigger_condition", "")
