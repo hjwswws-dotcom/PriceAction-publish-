@@ -15,83 +15,136 @@ if str(src_path) not in sys.path:
 
 def run_analysis_cycle(settings):
     """执行一次分析循环"""
-    from src.config.settings import get_settings
     from database import DatabaseManager
+    from src.data_provider.ccxt_fetcher import CCXTFetcher
+    from src.llm.siliconflow_provider import SiliconFlowProvider
     import json
-    import time as time_module
 
     db = DatabaseManager("./data.db")
+    db._ensure_connection()
+
+    # 数据库迁移：自动检查并补充所有缺失的列
+    try:
+        cursor = db._conn.cursor()
+
+        # 检查表是否存在
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='states'")
+        table_exists = cursor.fetchone()
+
+        if table_exists:
+            # 获取当前表的所有列
+            cursor.execute("PRAGMA table_info(states)")
+            columns = [row[1] for row in cursor.fetchall()]
+
+            # 定义必需的列和默认值
+            required_columns = {
+                "actionPlan": "TEXT DEFAULT '{}'",
+                "raw_response": "TEXT DEFAULT ''",
+            }
+
+            # 检查并添加缺失的列
+            for col_name, col_def in required_columns.items():
+                if col_name not in columns:
+                    print(f"  [DB] 检测到缺少 {col_name} 列，执行迁移...")
+                    cursor.execute(f"ALTER TABLE states ADD COLUMN {col_name} {col_def}")
+                    db._conn.commit()
+                    print(f"  [DB] {col_name} 列已添加")
+        else:
+            print("  [DB] states 表不存在，请确保已初始化数据库")
+
+    except Exception as e:
+        print(f"  [DB] 迁移检查跳过: {e}")
 
     # 获取配置
-    symbols = settings.analysis.symbols
-    timeframes = settings.analysis.timeframes
+    symbols = settings.symbols
+    timeframes = settings.timeframes
+    api_key = settings.api_key
+
+    # 初始化数据获取器和AI
+    proxy = settings.proxy
+    exchange_id = settings.exchange_id
+    exchange_options = (
+        json.loads(settings.exchange_options)
+        if settings.exchange_options
+        else {"defaultType": "swap"}
+    )
+
+    fetcher = CCXTFetcher(exchange_id=exchange_id, proxy=proxy, options=exchange_options)
+    llm = SiliconFlowProvider(api_key=api_key)
 
     print(f"分析 {len(symbols)} 个交易对...")
 
     for symbol in symbols:
         for tf in timeframes:
             try:
-                # 模拟价格数据（避免网络请求）
-                import random
+                # 1. 获取真实K线数据
+                klines = fetcher.fetch_ohlcv(symbol, timeframe=tf, limit=50)
 
-                base_price = 50000 if "BTC" in symbol else 3000
-                current_price = base_price * (1 + random.uniform(-0.02, 0.02))
+                if klines is None or len(klines) == 0:
+                    print(f"  [ERROR] {symbol} {tf}: 无法获取K线数据")
+                    continue
 
-                # 构建简单的分析状态
+                # 2. 调用AI分析
+                current_state = db.get_state(symbol, tf)
+                result = llm.analyze(symbol, klines, current_state)
+
+                if result is None or not result.get("success"):
+                    print(
+                        f"  [ERROR] {symbol} {tf}: AI分析失败 - {result.get('error', '未知错误') if result else '返回为空'}"
+                    )
+                    continue
+
+                # 3. 构建完整状态
                 state = {
                     "symbol": symbol,
                     "timeframe": tf,
-                    "marketCycle": "TRADING_RANGE",
+                    "marketCycle": result["state"].get("marketCycle", "TRADING_RANGE"),
                     "activeNarrative": json.dumps(
-                        {
-                            "pattern_name": "Range Bound",
-                            "status": "IN_PROGRESS",
-                            "key_levels": {
-                                "entry_trigger": round(current_price, 2),
-                                "invalidation_level": round(current_price * 0.99, 2),
-                                "profit_target_1": round(current_price * 1.02, 2),
-                            },
-                            "probability": "MEDIUM",
-                            "probability_value": 50.0,
-                            "risk_reward": 2.0,
-                        }
+                        result["state"].get("activeNarrative", {}), ensure_ascii=False
                     ),
                     "alternativeNarrative": json.dumps(
-                        {
-                            "pattern_name": "Breakout",
-                            "trigger_condition": "突破阻力位",
-                        }
+                        result["state"].get("alternativeNarrative", {}), ensure_ascii=False
                     ),
-                    "analysis_text": f"价格行为分析 - {symbol} {tf}\n当前价格: {round(current_price, 2)} USDT\n市场状态: 震荡整理",
-                    "last_updated": int(time_module.time() * 1000),
+                    "analysis_text": result.get("analysis_text", ""),
+                    "actionPlan": json.dumps(
+                        result["state"].get("actionPlan", {}), ensure_ascii=False
+                    ),
+                    "last_updated": int(time.time() * 1000),
+                    "raw_response": result.get("raw_response", ""),
                 }
 
-                # 保存到数据库
-                try:
-                    cursor = db._conn.cursor()
-                    cursor.execute(
-                        """
-                        INSERT OR REPLACE INTO states
-                        (symbol, timeframe, marketCycle, activeNarrative, alternativeNarrative, analysis_text, last_updated)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        (
-                            state["symbol"],
-                            state["timeframe"],
-                            state["marketCycle"],
-                            state["activeNarrative"],
-                            state["alternativeNarrative"],
-                            state["analysis_text"],
-                            state["last_updated"],
-                        ),
-                    )
-                    db._conn.commit()
-                    print(f"  [OK] {symbol} {tf} @ {round(current_price, 2)}")
-                except Exception as e:
-                    print(f"  [ERROR] {symbol} {tf}: {e}")
+                # 4. 保存到数据库
+                db._ensure_connection()
+                cursor = db._conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO states
+                    (symbol, timeframe, marketCycle, activeNarrative, alternativeNarrative, analysis_text, actionPlan, last_updated, raw_response)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                    (
+                        state["symbol"],
+                        state["timeframe"],
+                        state["marketCycle"],
+                        state["activeNarrative"],
+                        state["alternativeNarrative"],
+                        state["analysis_text"],
+                        state["actionPlan"],
+                        state["last_updated"],
+                        state["raw_response"],
+                    ),
+                )
+                db._conn.commit()
+
+                # 获取最新价格
+                current_price = klines[-1].get("close", 0) if klines else 0
+                print(f"  [OK] {symbol} {tf} @ {current_price:.2f}")
 
             except Exception as e:
                 print(f"  [ERROR] {symbol} {tf}: {e}")
+                import traceback
+
+                traceback.print_exc()
 
     db.close()
     print("分析完成")
@@ -100,25 +153,35 @@ def run_analysis_cycle(settings):
 def run_backend():
     """启动后端分析服务"""
     from src.config.settings import get_settings
-    from src.utils.logger import logger
 
-    settings = get_settings()
-    logger.info(f"Starting PriceAction Backend v2.0.0")
-    logger.info(f"Environment: {settings.environment}")
-    logger.info(f"Log Level: {settings.log_level}")
+    try:
+        settings = get_settings()
+    except Exception as e:
+        print(f"[ERROR] 配置加载失败: {e}")
+        return
 
     print("=" * 50)
     print("PriceAction Backend Service")
     print("=" * 50)
-    print(f"Monitored Symbols: {', '.join(settings.analysis.symbols)}")
-    print(f"Timeframes: {', '.join(settings.analysis.timeframes)}")
-    print(f"K-lines Limit: {settings.analysis.klines_limit}")
+    print(f"Environment: {settings.environment}")
+    print(f"Log Level: {settings.log_level}")
+    print(f"Monitored Symbols: {', '.join(settings.symbols)}")
+    print(f"Timeframes: {', '.join(settings.timeframes)}")
+    print(f"K-lines Limit: {settings.analysis_klines_limit}")
+    print(f"Exchange: {settings.exchange_id}")
+    print(f"Proxy: {settings.proxy or 'None'}")
     print("=" * 50)
     print("")
 
     # 执行初始分析
     print("执行初始分析...")
-    run_analysis_cycle(settings)
+    try:
+        run_analysis_cycle(settings)
+    except Exception as e:
+        print(f"[ERROR] 初始分析失败: {e}")
+        import traceback
+
+        traceback.print_exc()
 
     print("")
     print("后端服务运行中 (按 Ctrl+C 停止)")
@@ -131,7 +194,10 @@ def run_backend():
 
             print("")
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 执行定时分析...")
-            run_analysis_cycle(settings)
+            try:
+                run_analysis_cycle(settings)
+            except Exception as e:
+                print(f"[ERROR] 定时分析失败: {e}")
 
     except KeyboardInterrupt:
         print("\n正在停止后端服务...")
@@ -161,7 +227,7 @@ if __name__ == "__main__":
         "--mode",
         choices=["backend", "frontend", "both"],
         default="both",
-        help="启动模式: backend=后端, frontend=前端, both=两者",
+        help="运行模式: backend=后端, frontend=前端, both=两者",
     )
 
     args = parser.parse_args()

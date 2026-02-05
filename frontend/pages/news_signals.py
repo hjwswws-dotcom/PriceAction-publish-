@@ -168,6 +168,7 @@ def main():
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data.db"
         )
         db = DatabaseManager(db_path)
+        db._ensure_connection()  # 确保在当前线程建立连接
     except Exception as e:
         st.error(f"数据库连接失败: {e}")
         return
@@ -209,11 +210,7 @@ def main():
         if assets:
             news_signals = db.get_news_signals_by_assets(assets=assets, limit=100)
         else:
-            news_signals = db.get_latest_news_signals(
-                window_hours=hours if hours > 0 else 24,
-                topk=100,
-                min_rank_score=0.0,
-            )
+            news_signals = db.get_latest_news_signals(limit=100)
 
         # 按严重程度筛选
         filtered_signals = [s for s in news_signals if s.get("severity") in severities]

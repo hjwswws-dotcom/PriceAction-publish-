@@ -31,34 +31,20 @@ def fetch_cached_klines(symbol: str, timeframe: str, limit: int):
     from src.data_provider.ccxt_fetcher import CCXTFetcher
 
     settings = get_settings()
-    proxy = settings.exchange_proxy
-
+    # 确保使用 settings.proxy (对应 .env 中的 PRICEACTION_EXCHANGE_PROXY)
     fetcher = CCXTFetcher(
-        api_key=proxy or "",
-        secret="",
-        proxy=proxy,
+        exchange_id=settings.exchange_id, proxy=settings.proxy, options={"defaultType": "swap"}
     )
 
     data = fetcher.fetch_ohlcv(symbol, timeframe, limit)
 
-    # 转换为字典列表格式
-    if hasattr(data, "ohlcv") and isinstance(data.ohlcv, list):
-        klines = [
-            {
-                "timestamp": candle[0],
-                "open": candle[1],
-                "high": candle[2],
-                "low": candle[3],
-                "close": candle[4],
-                "volume": candle[5],
-            }
-            for candle in data.ohlcv
-        ]
-        return klines
-    elif isinstance(data, list):
-        return data
-    else:
-        raise ConnectionError(f"无法获取 {symbol} K线数据，请检查网络和代理设置")
+    if data is None or len(data) == 0:
+        st.error(f"无法获取 {symbol} 数据，请检查代理是否配置为 {settings.proxy}")
+        return None
+
+    # 统一转换为 DataFrame，这是 Streamlit 绘图最稳的数据格式
+    df = pd.DataFrame(data)
+    return df
 
 
 def create_kline_chart(
@@ -74,7 +60,7 @@ def create_kline_chart(
 ) -> go.Figure:
     """创建K线图"""
 
-    if not klines:
+    if klines is None or len(klines) == 0:
         raise ValueError("K线数据为空")
 
     # 转换为DataFrame
@@ -98,8 +84,8 @@ def create_kline_chart(
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.08,
+        subplot_titles=(f"{symbol} {timeframe} K线图", "成交量"),
         row_heights=[0.7, 0.3],
-        subplot_titles=(f"{symbol} {timeframe} - K线图", "成交量"),
     )
 
     # K线
@@ -111,193 +97,207 @@ def create_kline_chart(
             low=df["low"],
             close=df["close"],
             name="K线",
-            increasing_line_color="#26a69a",
-            decreasing_line_color="#ef5350",
+            increasing_line_color="#26A17E",
+            decreasing_line_color="#E6444F",
         ),
         row=1,
         col=1,
     )
 
-    # 关键价位
-    if key_levels and any(key_levels.values()):
-        colors = {
-            "entry_trigger": "#2196F3",
-            "invalidation_level": "#f44336",
-            "profit_target_1": "#4CAF50",
-        }
-        for level_name, price in key_levels.items():
-            if price and price > 0:
-                color = colors.get(level_name, "#9E9E9E")
-                level_label = {
-                    "entry_trigger": "入场",
-                    "invalidation_level": "止损",
-                    "profit_target_1": "止盈",
-                }.get(level_name, level_name)
+    # 成交量
+    if show_volume and "volume" in df.columns:
+        colors = [
+            "#26A17E" if row["close"] >= row["open"] else "#E6444F" for _, row in df.iterrows()
+        ]
+        fig.add_trace(
+            go.Bar(x=df.index, y=df["volume"], name="成交量", marker_color=colors),
+            row=2,
+            col=1,
+        )
 
-                fig.add_hline(
-                    y=price,
-                    line=dict(color=color, width=2, dash="dash"),
-                    row=1,
-                    col=1,
-                    annotation_text=f"{level_label}: {price:,.2f}",
-                    annotation_position="top right",
-                )
-
-    # 摆动高点和低点
+    # 摆动点
     if swing_points:
-        highs = [p for p in swing_points if p["type"] == "high"]
-        lows = [p for p in swing_points if p["type"] == "low"]
+        swing_highs = [(p["time"], p["high"]) for p in swing_points if p["type"] == "high"]
+        swing_lows = [(p["time"], p["low"]) for p in swing_points if p["type"] == "low"]
 
-        if highs:
+        if swing_highs:
             fig.add_trace(
                 go.Scatter(
-                    x=[p["time"] for p in highs],
-                    y=[p["price"] for p in highs],
+                    x=[s[0] for s in swing_highs],
+                    y=[s[1] for s in swing_highs],
                     mode="markers",
-                    marker=dict(symbol="triangle-down", size=8, color="#ef5350"),
-                    name="摆动高点",
+                    name="Swing High",
+                    marker=dict(symbol="triangle-down", size=10, color="#E6444F"),
                 ),
                 row=1,
                 col=1,
             )
 
-        if lows:
+        if swing_lows:
             fig.add_trace(
                 go.Scatter(
-                    x=[p["time"] for p in lows],
-                    y=[p["price"] for p in lows],
+                    x=[s[0] for s in swing_lows],
+                    y=[s[1] for s in swing_lows],
                     mode="markers",
-                    marker=dict(symbol="triangle-up", size=8, color="#26a69a"),
-                    name="摆动低点",
+                    name="Swing Low",
+                    marker=dict(symbol="triangle-up", size=10, color="#26A17E"),
                 ),
+                row=1,
+                col=1,
+            )
+
+    # 关键价位
+    if key_levels:
+        for level in key_levels.get("levels", []):
+            price = level.get("price")
+            level_type = level.get("type", "support")
+            color = "#26A17E" if level_type == "support" else "#E6444F"
+
+            fig.add_hline(
+                y=price,
+                line=dict(color=color, width=1, dash="dash"),
+                annotation_text=f"{price:,.2f}",
                 row=1,
                 col=1,
             )
 
     # 形态区域
     if pattern_zones:
-        for zone in pattern_zones[:5]:
+        for zone in pattern_zones:
             fig.add_vrect(
                 x0=zone["start"],
                 x1=zone["end"],
-                fillcolor=zone.get("color", "#9E9E9E"),
-                opacity=0.2,
+                fillcolor="orange",
+                opacity=0.1,
                 line_width=0,
+                annotation_text=zone.get("name", ""),
                 row=1,
                 col=1,
             )
 
-    # EMA均线
-    if show_ema and "EMA_20" in df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df["EMA_20"],
-                mode="lines",
-                line=dict(color="#FF9800", width=1.5),
-                name="EMA20",
-            ),
-            row=1,
-            col=1,
-        )
+    # 隐藏周末空白
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
 
-    # 成交量
-    if show_volume:
-        colors = [
-            "#26a69a" if close >= open else "#ef5350"
-            for open, close in zip(df["open"], df["close"])
-        ]
-        fig.add_trace(
-            go.Bar(x=df.index, y=df["volume"], marker_color=colors, name="成交量"),
-            row=2,
-            col=1,
-        )
-
-    # 布局
+    # 更新布局
     fig.update_layout(
-        xaxis_rangeslider_visible=False,
-        height=700,
+        title=dict(text=f"{symbol} {timeframe} 价格行为分析", x=0.5),
         template="plotly_dark",
-        margin=dict(l=50, r=50, t=50, b=50),
+        height=700,
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
     )
 
-    fig.update_xaxes(row=1, col=1, rangeslider=dict(visible=False))
-    fig.update_xaxes(row=2, col=1, title_text="时间")
+    # 隐藏网格
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(showgrid=True, gridcolor="#333333")
 
     return fig
 
 
 def display_chart_with_controls(
-    symbol: str,
-    key_levels: Optional[Dict] = None,
-    pattern_info: Optional[Dict] = None,
-    default_timeframe: str = "15m",
+    symbol: str = "Unknown",
+    timeframe: str = "15m",
+    show_ema: bool = True,
+    show_volume: bool = True,
+    show_swing_points: bool = True,
+    show_zones: bool = True,
+    key_levels: list = None,
+    pattern_info: dict = None,
+    **kwargs,
 ):
-    """显示交互式K线图（带控制面板）"""
+    """带控制按钮的K线图展示
+    兼容各种调用方式，**kwargs 吸收多余参数防止报错
+    """
+    # 从 kwargs 中获取可能的参数
+    timeframe = kwargs.get("default_timeframe", timeframe)
+    symbol = kwargs.get("symbol", symbol)
 
-    # 控制面板
-    with st.expander("图表设置", expanded=False):
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            show_ema = st.checkbox("EMA均线", value=True, key=f"ema_{symbol}")
-        with col2:
-            show_volume = st.checkbox("成交量", value=True, key=f"volume_{symbol}")
-        with col3:
-            show_swing = st.checkbox("摆动点", value=True, key=f"swing_{symbol}")
-        with col4:
-            show_zones = st.checkbox("形态区域", value=True, key=f"zones_{symbol}")
+    # 如果传入 df，直接使用；否则从数据库获取
+    df = kwargs.get("df")
 
-    # 获取数据
-    with st.spinner("加载K线数据..."):
-        try:
-            klines = fetch_cached_klines(symbol, default_timeframe, 50)
-        except Exception as e:
-            st.error(f"获取数据失败: {e}")
-            st.info("请检查: 1) VPN代理是否开启 2) 代理端口是否正确 (10806)")
+    # 尝试获取数据，优先从数据库获取
+    try:
+        from database import DatabaseManager
+
+        db = DatabaseManager("./data.db")
+        db._ensure_connection()
+        state = db.get_state(symbol, timeframe)
+        db.close()
+
+        # 尝试从数据库获取时间戳
+        last_updated = state.get("last_updated") if state else None
+        use_cache = False
+
+        # 如果数据超过5分钟，重新获取
+        if last_updated:
+            import time
+
+            if time.time() * 1000 - last_updated > 5 * 60 * 1000:
+                use_cache = False
+
+        # 获取K线数据
+        klines = fetch_cached_klines(symbol, timeframe, limit=100)
+
+        # klines 实际上是 DataFrame，需要用 .empty 检查
+        if klines is None or (hasattr(klines, "empty") and klines.empty):
+            st.error(f"无法获取 {symbol} 的K线数据，请检查网络连接")
             return
 
-    if not klines:
-        st.error("K线数据为空")
-        return
+        # 获取分析状态用于显示关键价位
+        key_levels = None
+        pattern_info = None
 
-    # 创建图表
-    fig = create_kline_chart(
-        klines=klines,
-        symbol=symbol,
-        timeframe=default_timeframe,
-        key_levels=key_levels,
-        pattern_info=pattern_info,
-        show_ema=show_ema,
-        show_volume=show_volume,
-        show_swing_points=show_swing,
-        show_zones=show_zones,
-    )
+        try:
+            from database import DatabaseManager
 
-    st.plotly_chart(
-        fig,
-        width="stretch",
-        config={
-            "displayModeBar": True,
-            "modeBarButtonsToAdd": ["drawline", "drawopenpath", "eraseshape"],
-            "displaylogo": False,
-        },
-    )
+            db = DatabaseManager("./data.db")
+            db._ensure_connection()
+            state = db.get_state(symbol, timeframe)
+            db.close()
 
-    # 统计信息
-    df = pd.DataFrame(klines)
-    st.markdown("**数据统计**")
-    cols = st.columns(5)
-    with cols[0]:
-        st.metric("当前", f"${df['close'].iloc[-1]:,.2f}")
-    with cols[1]:
-        st.metric("最高", f"${df['high'].max():,.2f}")
-    with cols[2]:
-        st.metric("最低", f"${df['low'].min():,.2f}")
-    with cols[3]:
-        change = df["close"].iloc[-1] - df["close"].iloc[0]
-        change_pct = (change / df["close"].iloc[0]) * 100
-        st.metric("涨跌", f"{change:+.2f}", f"{change_pct:+.2f}%")
-    with cols[4]:
-        st.metric("成交量", f"{df['volume'].iloc[-1]:,.0f}")
+            if state:
+                active_narrative_str = state.get("activeNarrative", "{}")
+                import json
+
+                if isinstance(active_narrative_str, str):
+                    try:
+                        active_narrative = json.loads(active_narrative_str)
+                        key_levels = {"levels": []}
+
+                        if "key_levels" in active_narrative:
+                            kl = active_narrative["key_levels"]
+                            if "entry_trigger" in kl:
+                                key_levels["levels"].append(
+                                    {"price": kl["entry_trigger"], "type": "entry"}
+                                )
+                            if "invalidation_level" in kl:
+                                key_levels["levels"].append(
+                                    {"price": kl["invalidation_level"], "type": "invalidation"}
+                                )
+                            if "profit_target_1" in kl:
+                                key_levels["levels"].append(
+                                    {"price": kl["profit_target_1"], "type": "target"}
+                                )
+                    except json.JSONDecodeError:
+                        pass
+        except Exception:
+            pass
+
+        # 绘制图表
+        fig = create_kline_chart(
+            klines,
+            symbol,
+            timeframe,
+            key_levels=key_levels,
+            pattern_info=pattern_info,
+            show_ema=show_ema,
+            show_volume=show_volume,
+            show_swing_points=show_swing_points,
+            show_zones=show_zones,
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"图表渲染失败: {e}")

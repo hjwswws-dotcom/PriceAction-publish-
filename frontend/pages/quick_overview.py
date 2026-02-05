@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
 import streamlit as st
 from database import DatabaseManager
 from datetime import datetime
+import json
 
 
 def get_action_state_icon(state: str) -> tuple:
@@ -43,6 +44,7 @@ def show():
 
     # 获取所有状态
     db = DatabaseManager("./data.db")
+    db._ensure_connection()  # 确保在当前线程建立连接
     states = db.get_all_states()
 
     if not states:
@@ -55,7 +57,16 @@ def show():
         symbol = state.get("symbol", "Unknown")
         timeframe = state.get("timeframe", "15m")
         action = state.get("actionPlan")
-        active = state.get("activeNarrative", {})
+        active_raw = state.get("activeNarrative", "{}")
+
+        # 解析JSON字符串（如果需要）
+        if isinstance(active_raw, str):
+            try:
+                active = json.loads(active_raw)
+            except (json.JSONDecodeError, TypeError):
+                active = {}
+        else:
+            active = active_raw
 
         # 解析actionPlan，兜底从activeNarrative提取
         if action:

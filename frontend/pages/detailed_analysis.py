@@ -22,6 +22,7 @@ def show():
 
     # 获取所有交易对状态
     db = DatabaseManager("./data.db")
+    db._ensure_connection()  # 确保在当前线程建立连接
     states = db.get_all_states()
 
     if not states:

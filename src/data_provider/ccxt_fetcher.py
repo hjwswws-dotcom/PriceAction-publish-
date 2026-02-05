@@ -2,56 +2,46 @@
 CCXT data fetcher implementation with proper proxy support
 """
 
-import os
 import ccxt
-from typing import Any, Dict, Optional
-from src.data_provider.base import BaseDataProvider, MarketData
+import pandas as pd
+from typing import List, Dict
 
 
-class CCXTFetcher(BaseDataProvider):
-    """CCXT-based data fetcher with proxy support"""
+class CCXTFetcher:
+    def __init__(self, exchange_id: str = "binance", proxy: str = None, options: Dict = None):
+        exchange_config = {"enableRateLimit": True, "options": options or {"defaultType": "swap"}}
 
-    def __init__(self, api_key: str = "", secret: str = "", proxy: str = None):
-        self._name = "ccxt"
+        exchange_class = getattr(ccxt, exchange_id, ccxt.binance)
+        self.exchange = exchange_class(exchange_config)
 
-        # 配置交易所
-        exchange_config = {
-            "apiKey": api_key,
-            "secret": secret,
-            "enableRateLimit": True,
-        }
-
-        # 设置代理 - 通过环境变量
+        # 统一代理设置逻辑
         if proxy:
-            if proxy.startswith("socks5://"):
-                # SOCKS5代理: 通过环境变量配置
-                os.environ["SOCKS_PROXY"] = proxy
-                # 移除代理配置，让CCXT使用环境变量
-                exchange_config["proxy"] = None
+            if "socks" in proxy.lower():
+                self.exchange.socksProxy = proxy
             else:
-                exchange_config["proxy"] = proxy
+                self.exchange.proxies = {"http": proxy, "https": proxy}
 
-        self.exchange = ccxt.binance(exchange_config)
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "15m", limit: int = 100) -> MarketData:
-        ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        return MarketData(
-            symbol=symbol,
-            timeframe=timeframe,
-            ohlcv=ohlcv,
-            timestamp=int(__import__("time").time() * 1000),
-        )
-
-    def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
-        return self.exchange.fetch_ticker(symbol)
-
-    def check_health(self) -> bool:
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "15m", limit: int = 100) -> List[Dict]:
         try:
-            self.exchange.fetch_time()
-            return True
-        except Exception:
-            return False
+            # 币安 symbol 格式转换（确保兼容性）
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+
+            result = []
+            for candle in ohlcv:
+                result.append(
+                    {
+                        "timestamp": candle[0],
+                        "datetime": pd.to_datetime(candle[0], unit="ms").strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                        "open": float(candle[1]),
+                        "high": float(candle[2]),
+                        "low": float(candle[3]),
+                        "close": float(candle[4]),
+                        "volume": float(candle[5]),
+                    }
+                )
+            return result
+        except Exception as e:
+            print(f"CCXT Error: {e}")
+            return []

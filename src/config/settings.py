@@ -48,7 +48,12 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
 
     # 分析配置
-    analysis_symbols: List[str] = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+    analysis_symbols: List[str] = [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT",
+        "XAU/USDT:USDT",
+        "XAG/USDT:USDT",
+    ]
     analysis_timeframes: List[str] = ["15m", "1h", "1d"]
     analysis_klines_limit: int = 50
 

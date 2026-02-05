@@ -146,6 +146,7 @@ def main():
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data.db"
         )
         db = DatabaseManager(db_path)
+        db._ensure_connection()  # 确保在当前线程建立连接
     except Exception as e:
         st.error(f"数据库连接失败: {e}")
         return

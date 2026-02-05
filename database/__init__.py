@@ -32,6 +32,7 @@ class DatabaseManager:
     def get_all_states(self) -> List[Dict[str, Any]]:
         """Get all trading pair states"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             cursor.execute("SELECT * FROM states ORDER BY symbol")
             return [dict(row) for row in cursor.fetchall()]
@@ -42,6 +43,7 @@ class DatabaseManager:
     def get_state_by_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get state for a specific symbol"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             cursor.execute("SELECT * FROM states WHERE symbol = ?", (symbol,))
             row = cursor.fetchone()
@@ -53,6 +55,7 @@ class DatabaseManager:
     def get_state(self, symbol: str, timeframe: str = "15m") -> Optional[Dict]:
         """Get state for a symbol and timeframe"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             cursor.execute(
                 "SELECT * FROM states WHERE symbol = ? AND timeframe = ?", (symbol, timeframe)
@@ -66,6 +69,7 @@ class DatabaseManager:
     def get_signals(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Get recent trading signals"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             cursor.execute(
                 "SELECT * FROM trading_signals ORDER BY timestamp DESC LIMIT ?", (limit,)
@@ -78,6 +82,7 @@ class DatabaseManager:
     def get_all_signals(self, limit: int = 100, hours: int = 0) -> List[Dict]:
         """Get all trading signals"""
         try:
+            self._ensure_connection()
             if hours > 0:
                 from datetime import datetime, timedelta
 
@@ -107,6 +112,7 @@ class DatabaseManager:
     def get_warning_events(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Get recent warning events"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             cursor.execute("SELECT * FROM warning_events ORDER BY timestamp DESC LIMIT ?", (limit,))
             return [dict(row) for row in cursor.fetchall()]
@@ -117,6 +123,7 @@ class DatabaseManager:
     def get_news_items(self, limit: int = 20) -> List[Dict[str, Any]]:
         """Get recent news items"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             cursor.execute("SELECT * FROM news_items ORDER BY timestamp DESC LIMIT ?", (limit,))
             return [dict(row) for row in cursor.fetchall()]
@@ -127,6 +134,7 @@ class DatabaseManager:
     def get_pattern_statistics(self, symbol: str = None) -> List[Dict[str, Any]]:
         """Get pattern statistics"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             if symbol:
                 cursor.execute("SELECT * FROM pattern_statistics WHERE symbol = ?", (symbol,))
@@ -140,6 +148,7 @@ class DatabaseManager:
     def get_multi_timeframe_states(self, symbol: str = None) -> List[Dict[str, Any]]:
         """Get multi-timeframe analysis states"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             if symbol:
                 cursor.execute("SELECT * FROM multi_timeframe_states WHERE symbol = ?", (symbol,))
@@ -153,6 +162,7 @@ class DatabaseManager:
     def get_trades(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Get recent trades"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             cursor.execute("SELECT * FROM trades ORDER BY entry_time DESC LIMIT ?", (limit,))
             return [dict(row) for row in cursor.fetchall()]
@@ -167,6 +177,7 @@ class DatabaseManager:
         try:
             from datetime import datetime
 
+            self._ensure_connection()
             cursor = self._conn.execute(
                 """INSERT INTO trades (
                     symbol, timeframe, direction, status,
@@ -201,6 +212,7 @@ class DatabaseManager:
         try:
             from datetime import datetime
 
+            self._ensure_connection()
             self._conn.execute(
                 """UPDATE trades SET risk_reward_expected=?, position_size_suggested=?,
                    risk_amount_percent=?, volatility_atr=?, volatility_atr_15m=?,
@@ -240,6 +252,7 @@ class DatabaseManager:
     def get_risk_analysis(self, analysis_id: int) -> Optional[Dict]:
         """Get risk analysis by ID"""
         try:
+            self._ensure_connection()
             cursor = self._conn.execute("SELECT * FROM trades WHERE id = ?", (analysis_id,))
             row = cursor.fetchone()
             if row:
@@ -260,6 +273,7 @@ class DatabaseManager:
     ) -> List[Dict]:
         """Get risk analysis history"""
         try:
+            self._ensure_connection()
             query = "SELECT * FROM trades WHERE 1=1"
             params = []
             if symbol:
@@ -292,6 +306,7 @@ class DatabaseManager:
         try:
             from datetime import datetime
 
+            self._ensure_connection()
             self._conn.execute(
                 """UPDATE trades SET status='CLOSED', outcome_feedback=?,
                    user_notes=CASE WHEN user_notes='' THEN ? ELSE user_notes || '; ' || ? END,
@@ -315,6 +330,7 @@ class DatabaseManager:
         try:
             from datetime import datetime
 
+            self._ensure_connection()
             self._conn.execute(
                 "UPDATE trades SET status='EXPIRED', updated_at=? WHERE id=?",
                 (int(datetime.now().timestamp() * 1000), analysis_id),
@@ -330,6 +346,7 @@ class DatabaseManager:
     def get_latest_news_signals(self, limit: int = 50) -> List[Dict]:
         """Get latest news signals"""
         try:
+            self._ensure_connection()
             cursor = self._conn.execute(
                 "SELECT * FROM news_signals ORDER BY created_time_utc DESC LIMIT ?", (limit,)
             )
@@ -352,6 +369,7 @@ class DatabaseManager:
     def get_news_signals_by_assets(self, assets: List[str], limit: int = 50) -> List[Dict]:
         """Get news signals for specific assets"""
         try:
+            self._ensure_connection()
             if not assets:
                 return []
             conditions = " OR ".join([f"assets LIKE ?" for _ in assets])
@@ -378,6 +396,7 @@ class DatabaseManager:
     def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
         """Execute custom query"""
         try:
+            self._ensure_connection()
             cursor = self._conn.cursor()
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]

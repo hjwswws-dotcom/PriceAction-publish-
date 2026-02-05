@@ -50,7 +50,9 @@ def show():
     # 初始化
     @st.cache_resource
     def get_db_manager():
-        return DatabaseManager("./data.db")
+        db = DatabaseManager("./data.db")
+        db._ensure_connection()  # 确保在当前线程建立连接
+        return db
 
     @st.cache_resource
     def get_research_assistant():
