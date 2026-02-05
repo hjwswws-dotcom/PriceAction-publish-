@@ -3,6 +3,14 @@
 用户手动输入交易计划，获取AI风险分析和仓位建议
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to path for imports
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import streamlit as st
 import pandas as pd
 import json
@@ -10,14 +18,11 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 # 导入项目模块
-import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-
-from database.db_manager import DatabaseManager
-from core.research_assistant import ResearchAssistant
-from core.risk_analyzer import RiskAnalyzer
+from database import DatabaseManager
+from src.core.research_assistant import ResearchAssistant
+from src.core.risk_analyzer import RiskAnalyzer
 
 # 交易对列表
 SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "XAG/USDT:USDT", "XAU/USDT:USDT"]
@@ -110,9 +115,7 @@ def show():
 
         with st.form("trade_plan_form"):
             # 基本信息
-            symbol = st.selectbox(
-                "交易对", SYMBOLS, index=get_symbol_index(default_symbol)
-            )
+            symbol = st.selectbox("交易对", SYMBOLS, index=get_symbol_index(default_symbol))
             direction = st.radio(
                 "方向",
                 ["LONG", "SHORT"],
@@ -137,9 +140,7 @@ def show():
                 entry_price = st.number_input(
                     "入场价",
                     min_value=0.0,
-                    value=float(default_entry)
-                    if default_entry and default_entry > 0
-                    else 0.0,
+                    value=float(default_entry) if default_entry and default_entry > 0 else 0.0,
                     step=0.01,
                     format="%.2f",
                 )
@@ -177,9 +178,7 @@ def show():
             col5, col6 = st.columns(2)
             with col5:
                 # 计算滑块value，确保在10-90范围内
-                win_value = (
-                    int(default_winrate * 100) if 0 < default_winrate <= 1 else 50
-                )
+                win_value = int(default_winrate * 100) if 0 < default_winrate <= 1 else 50
                 win_probability = (
                     st.slider(
                         "估计胜率 (%)",
@@ -195,9 +194,7 @@ def show():
                     "计划仓位 (%)", min_value=1, max_value=50, value=10, step=1
                 )
 
-            user_notes = st.text_area(
-                "备注 (可选)", placeholder="记录您的交易理由或其他想法..."
-            )
+            user_notes = st.text_area("备注 (可选)", placeholder="记录您的交易理由或其他想法...")
 
             submitted = st.form_submit_button(
                 "🚀 AI风险分析", use_container_width=True, type="primary"
@@ -242,9 +239,7 @@ def show():
                             "entry_price": entry_price,
                             "stop_loss": stop_loss,
                             "take_profit_1": take_profit_1,
-                            "take_profit_2": take_profit_2
-                            if take_profit_2 > 0
-                            else None,
+                            "take_profit_2": take_profit_2 if take_profit_2 > 0 else None,
                             "win_probability": win_probability,
                             "position_size_actual": position_size_actual,
                             "user_notes": user_notes,
@@ -281,9 +276,7 @@ def show():
 
                                 analyst_ctx = AnalystContext.from_state(analyst_state)
                                 if analyst_ctx:
-                                    market_context.analyst_context = (
-                                        analyst_ctx.to_dict()
-                                    )
+                                    market_context.analyst_context = analyst_ctx.to_dict()
 
                         # 4. 调用AI进行风险分析
                         ai_analysis = ra.analyze_trade_risk(
@@ -353,9 +346,7 @@ def show():
                             st.metric(
                                 "ATR波动率",
                                 f"{atr:.2f}",
-                                delta=f"{atr / entry_price * 100:.2f}%"
-                                if entry_price > 0
-                                else "",
+                                delta=f"{atr / entry_price * 100:.2f}%" if entry_price > 0 else "",
                             )
 
                         # R-multiple计划
@@ -517,9 +508,7 @@ def show():
                         st.info(ai_rec)
 
                         with st.expander("查看完整AI分析"):
-                            st.markdown(
-                                risk_result.get("ai_risk_analysis", "暂无详细分析")
-                            )
+                            st.markdown(risk_result.get("ai_risk_analysis", "暂无详细分析"))
 
                         # 仓位对比
                         st.divider()
@@ -600,9 +589,9 @@ def show():
                 df_data.append(
                     {
                         "ID": record.get("id"),
-                        "时间": datetime.fromtimestamp(
-                            record.get("created_at", 0) / 1000
-                        ).strftime("%m-%d %H:%M"),
+                        "时间": datetime.fromtimestamp(record.get("created_at", 0) / 1000).strftime(
+                            "%m-%d %H:%M"
+                        ),
                         "交易对": record.get("symbol", "").replace(":USDT", ""),
                         "方向": record.get("direction", ""),
                         "入场价": f"{record.get('entry_price', 0):.2f}",
@@ -644,9 +633,7 @@ def show():
 
                     with col_btn1:
                         if st.button("✅ 标记为已关闭", use_container_width=True):
-                            db.close_risk_analysis(
-                                int(selected_id), outcome_feedback="CLOSED"
-                            )
+                            db.close_risk_analysis(int(selected_id), outcome_feedback="CLOSED")
                             st.rerun()
 
                     with col_btn2:

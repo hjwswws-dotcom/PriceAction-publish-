@@ -7,9 +7,14 @@ import streamlit as st
 import sys
 from pathlib import Path
 
-# 添加项目根目录到Python路径
+# 添加项目根目录和frontend目录到Python路径
 project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+frontend_dir = Path(__file__).parent
+
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+if str(frontend_dir) not in sys.path:
+    sys.path.insert(0, str(frontend_dir))
 
 # 导入页面模块
 from frontend.pages import detailed_analysis, quick_overview
@@ -44,9 +49,7 @@ st.markdown(
 def main():
     """主函数 - 侧边栏导航"""
     # 页面标题
-    st.markdown(
-        '<div class="main-header">📊 AI价格行为分析系统</div>', unsafe_allow_html=True
-    )
+    st.markdown('<div class="main-header">📊 AI价格行为分析系统</div>', unsafe_allow_html=True)
 
     # 侧边栏导航
     with st.sidebar:

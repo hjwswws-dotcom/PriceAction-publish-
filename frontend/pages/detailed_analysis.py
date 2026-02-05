@@ -3,8 +3,16 @@
 集成K线图与AI信号标记
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to path for imports
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import streamlit as st
-from database.db_manager import DatabaseManager
+from database import DatabaseManager
 from frontend.components.chart_display import display_chart_with_controls
 
 

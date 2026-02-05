@@ -3,6 +3,14 @@ K线图展示组件
 使用Plotly绘制交互式K线图，支持EMA均线、信号标记和形态区域高亮
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to path for imports
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots

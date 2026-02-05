@@ -3,24 +3,23 @@
 展示推荐信号和警告信号
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to path for imports
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 # 页面配置
-st.set_page_config(
-    page_title="交易信号 | AI价格行为分析", page_icon="🚨", layout="wide"
-)
+st.set_page_config(page_title="交易信号 | AI价格行为分析", page_icon="🚨", layout="wide")
 
-# 添加项目根目录到路径
-import sys
-from pathlib import Path
-
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from database.db_manager import DatabaseManager
+from database import DatabaseManager
 
 
 def format_timestamp(ts: int) -> str:
@@ -123,9 +122,7 @@ def display_signal_card(signal: Dict):
             ai_analysis = signal.get("ai_analysis", "")
             if ai_analysis:
                 st.markdown("**AI分析**")
-                st.write(
-                    ai_analysis[:300] + "..." if len(ai_analysis) > 300 else ai_analysis
-                )
+                st.write(ai_analysis[:300] + "..." if len(ai_analysis) > 300 else ai_analysis)
 
             # 成交量信息
             vol_ratio = signal.get("volume_ratio")
@@ -188,9 +185,7 @@ def main():
         all_signals = db.get_all_signals(limit=200, hours=hours if hours > 0 else 0)
 
         # 按等级筛选
-        filtered_signals = [
-            s for s in all_signals if s.get("signal_level") in signal_levels
-        ]
+        filtered_signals = [s for s in all_signals if s.get("signal_level") in signal_levels]
 
         # 按时间排序
         filtered_signals.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
@@ -211,12 +206,8 @@ def main():
     st.header("活跃信号")
 
     # 分离推荐信号和警告信号
-    recommended_signals = [
-        s for s in filtered_signals if s.get("signal_level") == "RECOMMENDED"
-    ]
-    warning_signals = [
-        s for s in filtered_signals if s.get("signal_level") == "WARNING"
-    ]
+    recommended_signals = [s for s in filtered_signals if s.get("signal_level") == "RECOMMENDED"]
+    warning_signals = [s for s in filtered_signals if s.get("signal_level") == "WARNING"]
 
     # 显示推荐信号
     if recommended_signals:

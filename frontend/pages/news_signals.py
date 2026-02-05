@@ -3,6 +3,14 @@
 展示实时新闻信号和风险警报
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to path for imports
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -10,18 +18,9 @@ from typing import Dict, List, Optional
 import json
 
 # 页面配置
-st.set_page_config(
-    page_title="📰 新闻信号 | AI价格行为分析", page_icon="📰", layout="wide"
-)
+st.set_page_config(page_title="📰 新闻信号 | AI价格行为分析", page_icon="📰", layout="wide")
 
-# 添加项目根目录到路径
-import sys
-from pathlib import Path
-
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from database.db_manager import DatabaseManager
+from database import DatabaseManager
 
 
 def format_timestamp(ts: int) -> str:
@@ -230,9 +229,7 @@ def main():
         )
 
         # 显示统计信息
-        critical_count = len(
-            [s for s in news_signals if s.get("severity") == "CRITICAL"]
-        )
+        critical_count = len([s for s in news_signals if s.get("severity") == "CRITICAL"])
         warning_count = len([s for s in news_signals if s.get("severity") == "WARNING"])
 
         col1, col2, col3 = st.sidebar.columns(3)

@@ -3,8 +3,16 @@
 包含：行动状态、方向、入场止损止盈、AI胜率、一键计算风险
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to path for imports
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import streamlit as st
-from database.db_manager import DatabaseManager
+from database import DatabaseManager
 from datetime import datetime
 
 
@@ -122,9 +130,7 @@ def show():
 
                 with col5:
                     if win_rate:
-                        win_percent = (
-                            int(win_rate * 100) if win_rate <= 1 else int(win_rate)
-                        )
+                        win_percent = int(win_rate * 100) if win_rate <= 1 else int(win_rate)
                         st.metric("AI胜率", f"{win_percent}%", delta_color="normal")
 
                 with col6:
