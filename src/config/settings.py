@@ -35,6 +35,8 @@ class ExchangeSettings(BaseSettings):
     id: str = "binance"
     rate_limit: bool = True
     proxy: Optional[str] = None
+    binance_api_key: Optional[str] = None
+    binance_secret: Optional[str] = None
 
 
 class AnalysisSettings(BaseSettings):
@@ -85,9 +87,7 @@ class Settings(BaseSettings):
     analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
     exchange: ExchangeSettings = Field(default_factory=ExchangeSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
-    multi_timeframe: MultiTimeframeSettings = Field(
-        default_factory=MultiTimeframeSettings
-    )
+    multi_timeframe: MultiTimeframeSettings = Field(default_factory=MultiTimeframeSettings)
     notification: NotificationSettings = Field(default_factory=NotificationSettings)
     signal_system: SignalSystemSettings = Field(default_factory=SignalSystemSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
