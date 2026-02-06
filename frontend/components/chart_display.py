@@ -157,9 +157,14 @@ def create_kline_chart(
         )
 
     # 摆动点
-    if swing_points:
-        swing_highs = [(p["time"], p["high"]) for p in swing_points if p["type"] == "high"]
-        swing_lows = [(p["time"], p["low"]) for p in swing_points if p["type"] == "low"]
+    if swing_points and isinstance(swing_points, dict):
+        # calculate_swing_points 返回格式: {"swing_highs": [(idx, price), ...], "swing_lows": [(idx, price), ...]}
+        raw_highs = swing_points.get("swing_highs", [])
+        raw_lows = swing_points.get("swing_lows", [])
+
+        # 将索引转换为时间戳
+        swing_highs = [(df.index[idx], price) for idx, price in raw_highs if idx < len(df)]
+        swing_lows = [(df.index[idx], price) for idx, price in raw_lows if idx < len(df)]
 
         if swing_highs:
             fig.add_trace(

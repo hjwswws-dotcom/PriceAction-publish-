@@ -1,17 +1,29 @@
 """
-PriceAction 主入口模块
+PriceAction 主入口模块 - 异步架构版本
+支持并发数据获取和多周期共振分析
 """
 
 import sys
 import time
 import threading
 import sqlite3
+import asyncio
+import json
 from pathlib import Path
+from typing import Dict, List, Optional, Any
 
 # 添加src目录到路径
 src_path = Path(__file__).parent.parent
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
+
+# 并发保护锁 - 防止分析循环重叠执行
+_analysis_lock = threading.Lock()
+
+# 新闻抓取模块导入
+from src.data.news.cryptocompare_scraper import CryptoCompareScraper
+from src.data.news.refiner import Refiner
+from src.data.news.analyzer import NewsAnalyzer
 
 
 def init_database():
@@ -42,6 +54,8 @@ def init_database():
                 keyLevels TEXT,
                 analysis_text TEXT,
                 raw_response TEXT,
+                consensus_score REAL,
+                consensus_direction TEXT,
                 last_updated INTEGER
             )
         """)
@@ -53,7 +67,201 @@ def init_database():
         conn.commit()
         print("[DB] 数据库已初始化，states 表就绪")
 
+    # 检查并创建新闻相关表
+    tables_to_create = {
+        "news_items": """
+            CREATE TABLE IF NOT EXISTS news_items (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                source_item_id TEXT,
+                title TEXT,
+                url TEXT,
+                published_time_utc INTEGER,
+                ingest_time_utc INTEGER,
+                content TEXT,
+                language TEXT,
+                votes_positive INTEGER DEFAULT 0,
+                votes_negative INTEGER DEFAULT 0,
+                votes_installed INTEGER DEFAULT 0,
+                domain TEXT,
+                kind TEXT,
+                status TEXT DEFAULT 'NEW',
+                created_at INTEGER,
+                updated_at INTEGER
+            )
+        """,
+        "refined_docs": """
+            CREATE TABLE IF NOT EXISTS refined_docs (
+                id TEXT PRIMARY KEY,
+                news_id TEXT,
+                url TEXT,
+                title TEXT,
+                markdown_content TEXT,
+                summary TEXT,
+                key_entities TEXT,
+                quotes TEXT,
+                status TEXT,
+                error_message TEXT,
+                created_at INTEGER,
+                updated_at INTEGER
+            )
+        """,
+        "news_signals": """
+            CREATE TABLE IF NOT EXISTS news_signals (
+                signal_id TEXT PRIMARY KEY,
+                event_type TEXT,
+                one_line_thesis TEXT,
+                assets TEXT,
+                direction TEXT,
+                confidence INTEGER,
+                timeframe TEXT,
+                impact_volatility INTEGER,
+                tail_risk INTEGER,
+                news_ids TEXT,
+                evidence_urls TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_time_utc INTEGER,
+                expires_time_utc INTEGER
+            )
+        """,
+        "trading_signals": """
+            CREATE TABLE IF NOT EXISTS trading_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                timeframe TEXT,
+                timestamp INTEGER,
+                signal_type TEXT,
+                direction TEXT,
+                entry_price REAL,
+                stop_loss REAL,
+                take_profit REAL,
+                confidence INTEGER,
+                pattern_name TEXT,
+                signal_checks TEXT,
+                status TEXT DEFAULT 'ACTIVE',
+                created_at INTEGER,
+                updated_at INTEGER
+            )
+        """,
+        "trades": """
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                timeframe TEXT,
+                direction TEXT,
+                status TEXT DEFAULT 'ANALYZED',
+                entry_price REAL,
+                stop_loss REAL,
+                take_profit_1 REAL,
+                take_profit_2 REAL,
+                win_probability REAL,
+                position_size_actual REAL,
+                position_size_suggested REAL,
+                risk_amount_percent REAL,
+                risk_reward_expected REAL,
+                volatility_atr REAL,
+                volatility_atr_15m REAL,
+                volatility_atr_1h REAL,
+                volatility_atr_1d REAL,
+                sharpe_ratio_estimate REAL,
+                kelly_fraction REAL,
+                kelly_fraction_adjusted REAL,
+                max_drawdown_estimate REAL,
+                r_multiple_plan TEXT,
+                stop_distance_percent REAL,
+                ai_risk_analysis TEXT,
+                ai_recommendation TEXT,
+                risk_level TEXT,
+                analysis_timestamp INTEGER,
+                user_notes TEXT,
+                outcome_feedback TEXT,
+                created_at INTEGER,
+                updated_at INTEGER
+            )
+        """,
+    }
+
+    for table_name, create_sql in tables_to_create.items():
+        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+        if not cursor.fetchone():
+            cursor.execute(create_sql)
+            conn.commit()
+            print(f"[DB] 创建表 {table_name}")
+
+    # 检查是否需要迁移（添加新列）
+    try:
+        cursor.execute("PRAGMA table_info(states)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        # 添加缺失的列
+        new_columns = {
+            "consensus_score": "REAL DEFAULT 0.0",
+            "consensus_direction": "TEXT DEFAULT 'NEUTRAL'",
+        }
+
+        for col_name, col_def in new_columns.items():
+            if col_name not in columns:
+                cursor.execute(f"ALTER TABLE states ADD COLUMN {col_name} {col_def}")
+                conn.commit()
+                print(f"[DB] 添加列 {col_name}")
+    except Exception as e:
+        print(f"[DB] 迁移检查跳过: {e}")
+
     conn.close()
+
+
+def _save_consolidated_state(
+    symbol: str,
+    timeframe_states: Dict[str, Dict],
+    consensus: Dict,
+    db,
+    raw_response: str = "",
+    analysis_text: str = "",
+):
+    """保存统一的分析状态到数据库（包含共振信息）"""
+    import time as time_module
+
+    for tf, state in timeframe_states.items():
+        db_state = {
+            "symbol": symbol,
+            "timeframe": tf,
+            "marketCycle": state.get("marketCycle", "TRADING_RANGE"),
+            "activeNarrative": json.dumps(state.get("activeNarrative", {}), ensure_ascii=False),
+            "alternativeNarrative": json.dumps(
+                state.get("alternativeNarrative", {}), ensure_ascii=False
+            ),
+            "analysis_text": analysis_text if tf == "15m" else state.get("analysis_text", ""),
+            "actionPlan": json.dumps(state.get("actionPlan", {}), ensure_ascii=False),
+            "consensus_score": consensus.get("confidence", 0.0),
+            "consensus_direction": consensus.get("direction", "NEUTRAL"),
+            "last_updated": int(time_module.time() * 1000),
+            "raw_response": raw_response if tf == "15m" else "",  # 只保存一份原始响应
+        }
+
+        db._ensure_connection()
+        cursor = db._conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO states
+            (symbol, timeframe, marketCycle, activeNarrative, alternativeNarrative, 
+             analysis_text, actionPlan, consensus_score, consensus_direction, last_updated, raw_response)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                db_state["symbol"],
+                db_state["timeframe"],
+                db_state["marketCycle"],
+                db_state["activeNarrative"],
+                db_state["alternativeNarrative"],
+                db_state["analysis_text"],
+                db_state["actionPlan"],
+                db_state["consensus_score"],
+                db_state["consensus_direction"],
+                db_state["last_updated"],
+                db_state["raw_response"],
+            ),
+        )
+        db._conn.commit()
 
 
 def _analyze_single_timeframe(symbol, tf, klines, db, llm):
@@ -73,7 +281,7 @@ def _analyze_single_timeframe(symbol, tf, klines, db, llm):
 
 
 def _save_timeframe_state(symbol, tf, result, db, full_result):
-    """保存单周期分析结果到数据库"""
+    """保存单周期分析结果到数据库（降级时使用）"""
     import json
     import time
 
@@ -87,6 +295,8 @@ def _save_timeframe_state(symbol, tf, result, db, full_result):
         ),
         "analysis_text": full_result.get("analysis_text", ""),
         "actionPlan": json.dumps(result.get("actionPlan", {}), ensure_ascii=False),
+        "consensus_score": 0.0,
+        "consensus_direction": "NEUTRAL",
         "last_updated": int(time.time() * 1000),
         "raw_response": full_result.get("raw_response", ""),
     }
@@ -96,8 +306,9 @@ def _save_timeframe_state(symbol, tf, result, db, full_result):
     cursor.execute(
         """
         INSERT OR REPLACE INTO states
-        (symbol, timeframe, marketCycle, activeNarrative, alternativeNarrative, analysis_text, actionPlan, last_updated, raw_response)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (symbol, timeframe, marketCycle, activeNarrative, alternativeNarrative, 
+         analysis_text, actionPlan, consensus_score, consensus_direction, last_updated, raw_response)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             state["symbol"],
@@ -107,6 +318,8 @@ def _save_timeframe_state(symbol, tf, result, db, full_result):
             state["alternativeNarrative"],
             state["analysis_text"],
             state["actionPlan"],
+            state["consensus_score"],
+            state["consensus_direction"],
             state["last_updated"],
             state["raw_response"],
         ),
@@ -114,57 +327,145 @@ def _save_timeframe_state(symbol, tf, result, db, full_result):
     db._conn.commit()
 
 
-def run_analysis_cycle(settings):
-    """执行一次分析循环"""
+async def process_symbol_async(
+    symbol: str, timeframes: List[str], fetcher, llm, db, consensus_calc
+) -> bool:
+    """
+    异步处理单个交易对的多周期分析
+
+    Args:
+        symbol: 交易对符号
+        timeframes: 时间框架列表
+        fetcher: 异步数据获取器
+        llm: LLM Provider
+        db: 数据库管理器
+        consensus_calc: 共振计算器
+
+    Returns:
+        是否成功
+    """
+    print(f"正在分析 {symbol}...")
+
+    try:
+        # 1. 并发获取所有周期的K线数据
+        print(f"  并发获取 {len(timeframes)} 个周期数据...")
+        timeframe_data = await fetcher.fetch_all_timeframes(symbol, timeframes, limit=50)
+
+        valid_timeframes = {tf: data for tf, data in timeframe_data.items() if data}
+        if not valid_timeframes:
+            print(f"  [ERROR] {symbol}: 无法获取任何K线数据")
+            return False
+
+        for tf, data in valid_timeframes.items():
+            print(f"  ✓ {tf}: {len(data)} 根K线")
+
+        # 2. 获取各周期当前状态
+        current_states = {}
+        for tf in valid_timeframes.keys():
+            current_states[tf] = db.get_state(symbol, tf)
+
+        # 获取新闻上下文（如果存在）
+        news_context = None
+        recent_signals = db.get_latest_news_signals(limit=5)
+        if recent_signals:
+            news_context = {
+                "items": recent_signals,
+                "risk_summary": {"level": "NORMAL" if not recent_signals else "CAUTION"},
+            }
+
+        # 3. 调用多周期AI分析（传入RAG和新闻）
+        print(f"  调用多周期AI分析...")
+        result = llm.analyze_multi_timeframe(
+            symbol,
+            valid_timeframes,
+            current_states,
+            rag_context="",  # 暂时为空，后续可集成RAG
+            news_context=news_context,
+        )
+
+        if not result.get("success"):
+            print(f"  [ERROR] {symbol}: AI分析失败 - {result.get('error', '未知错误')}")
+            # 降级：尝试单周期分析
+            for tf, klines in valid_timeframes.items():
+                _analyze_single_timeframe(symbol, tf, klines, db, llm)
+            return False
+
+        # 4. 解析多周期结果
+        from src.core.response_parser import ResponseParser
+
+        parse_result = ResponseParser().parse_multi_timeframe(result.get("raw_response", ""))
+
+        if not parse_result.get("success"):
+            print(f"  [WARNING] {symbol}: 多周期解析失败，尝试降级")
+            for tf, klines in valid_timeframes.items():
+                _analyze_single_timeframe(symbol, tf, klines, db, llm)
+            return False
+
+        # 5. 提取各周期状态
+        timeframe_states = parse_result.get("timeframe_states", {})
+
+        # 6. 计算共振分数（关键改进！）
+        states_for_consensus = []
+        for tf, state in timeframe_states.items():
+            state_copy = state.copy()
+            state_copy["symbol"] = symbol
+            state_copy["timeframe"] = tf
+            states_for_consensus.append(state_copy)
+
+        consensus = consensus_calc.calculate_consensus(states_for_consensus)
+        print(f"  共振分析: {consensus['direction']} (置信度: {consensus['confidence']:.0%})")
+
+        # 7. 一次性保存所有周期的状态和共振信息
+        _save_consolidated_state(
+            symbol,
+            timeframe_states,
+            consensus,
+            db,
+            raw_response=result.get("raw_response", ""),
+            analysis_text=parse_result.get("analysis_text", ""),
+        )
+
+        # 8. 输出结果摘要
+        for tf in valid_timeframes.keys():
+            if tf in timeframe_states:
+                current_price = valid_timeframes[tf][-1].get("close", 0)
+                print(f"  [OK] {symbol} {tf} @ {current_price:.2f}")
+
+        print(f"  {symbol} 多周期分析完成 (共振: {consensus['recommendation']})")
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] {symbol}: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+async def run_analysis_cycle_async(settings):
+    """
+    执行异步分析循环
+
+    Args:
+        settings: 配置对象
+    """
     # 初始化数据库
     init_database()
 
     from database import DatabaseManager
-    from src.data_provider.ccxt_fetcher import CCXTFetcher
+    from src.data_provider.async_ccxt_fetcher import AsyncCCXTFetcher
     from src.llm.siliconflow_provider import SiliconFlowProvider
-    import json
+    from src.core.consensus_calculator import ConsensusCalculator
 
     db = DatabaseManager("./data.db")
     db._ensure_connection()
-
-    # 数据库迁移：自动检查并补充所有缺失的列
-    try:
-        cursor = db._conn.cursor()
-
-        # 检查表是否存在
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='states'")
-        table_exists = cursor.fetchone()
-
-        if table_exists:
-            # 获取当前表的所有列
-            cursor.execute("PRAGMA table_info(states)")
-            columns = [row[1] for row in cursor.fetchall()]
-
-            # 定义必需的列和默认值
-            required_columns = {
-                "actionPlan": "TEXT DEFAULT '{}'",
-                "raw_response": "TEXT DEFAULT ''",
-            }
-
-            # 检查并添加缺失的列
-            for col_name, col_def in required_columns.items():
-                if col_name not in columns:
-                    print(f"  [DB] 检测到缺少 {col_name} 列，执行迁移...")
-                    cursor.execute(f"ALTER TABLE states ADD COLUMN {col_name} {col_def}")
-                    db._conn.commit()
-                    print(f"  [DB] {col_name} 列已添加")
-        else:
-            print("  [DB] states 表不存在，请确保已初始化数据库")
-
-    except Exception as e:
-        print(f"  [DB] 迁移检查跳过: {e}")
 
     # 获取配置
     symbols = settings.symbols
     timeframes = settings.timeframes
     api_key = settings.api_key
 
-    # 初始化数据获取器和AI
+    # 初始化组件
     proxy = settings.proxy
     exchange_id = settings.exchange_id
     exchange_options = (
@@ -173,79 +474,90 @@ def run_analysis_cycle(settings):
         else {"defaultType": "swap"}
     )
 
-    fetcher = CCXTFetcher(exchange_id=exchange_id, proxy=proxy, options=exchange_options)
+    # 初始化共振计算器（权重：日线最高，小时次之，15分钟最低）
+    consensus_weights = {"15m": 0.3, "1h": 0.6, "1d": 1.0}
+    consensus_calc = ConsensusCalculator(consensus_weights)
+
+    # 初始化LLM
     llm = SiliconFlowProvider(api_key=api_key)
 
     print(f"分析 {len(symbols)} 个交易对...")
 
-    for symbol in symbols:
-        print(f"正在分析 {symbol}...")
-
-        try:
-            # 1. 一次性获取所有周期的K线数据
-            timeframe_data = {}
-            for tf in ["15m", "1h", "1d"]:
-                klines = fetcher.fetch_ohlcv(symbol, timeframe=tf, limit=50)
-                if klines:
-                    timeframe_data[tf] = klines
-                    print(f"  获取 {tf} K线: {len(klines)} 根")
-
-            if not timeframe_data:
-                print(f"  [ERROR] {symbol}: 无法获取任何K线数据")
-                continue
-
-            # 2. 获取各周期当前状态
-            current_states = {}
-            for tf in timeframe_data.keys():
-                state = db.get_state(symbol, tf)
-                current_states[tf] = state
-
-            # 3. 调用多周期AI分析（一次性分析所有周期）
-            print(f"  调用多周期分析...")
-            result = llm.analyze_multi_timeframe(symbol, timeframe_data, current_states)
-
-            if not result.get("success"):
-                print(f"  [ERROR] {symbol}: AI分析失败 - {result.get('error', '未知错误')}")
-                # 降级：尝试单周期分析
-                for tf, klines in timeframe_data.items():
-                    _analyze_single_timeframe(symbol, tf, klines, db, llm)
-                continue
-
-            # 4. 解析多周期结果
-            from src.core.response_parser import ResponseParser
-
-            parse_result = ResponseParser().parse_multi_timeframe(result.get("raw_response", ""))
-
-            if not parse_result.get("success"):
-                print(f"  [WARNING] {symbol}: 多周期解析失败，尝试降级")
-                for tf, klines in timeframe_data.items():
-                    _analyze_single_timeframe(symbol, tf, klines, db, llm)
-                continue
-
-            # 5. 保存每个周期的分析结果
-            timeframe_states = parse_result.get("timeframe_states", {})
-            for tf in timeframe_data.keys():
-                if tf in timeframe_states:
-                    _save_timeframe_state(symbol, tf, timeframe_states[tf], db, result)
-                    # 获取该周期最新价格
-                    current_price = (
-                        timeframe_data[tf][-1].get("close", 0) if timeframe_data[tf] else 0
-                    )
-                    print(f"  [OK] {symbol} {tf} @ {current_price:.2f}")
-                else:
-                    # 该周期没有分析结果，单周期分析
-                    _analyze_single_timeframe(symbol, tf, timeframe_data[tf], db, llm)
-
-            print(f"  {symbol} 多周期分析完成")
-
-        except Exception as e:
-            print(f"  [ERROR] {symbol}: {e}")
-            import traceback
-
-            traceback.print_exc()
+    # 使用异步上下文管理器管理fetcher生命周期
+    async with AsyncCCXTFetcher(
+        exchange_id=exchange_id, proxy=proxy, options=exchange_options
+    ) as fetcher:
+        # 顺序处理每个币种（避免API限流），但每个币种内部并发获取多周期数据
+        for symbol in symbols:
+            await process_symbol_async(
+                symbol=symbol,
+                timeframes=timeframes,
+                fetcher=fetcher,
+                llm=llm,
+                db=db,
+                consensus_calc=consensus_calc,
+            )
 
     db.close()
     print("分析完成")
+
+
+def run_analysis_cycle(settings):
+    """同步包装器 - 运异步分析循环"""
+    asyncio.run(run_analysis_cycle_async(settings))
+
+
+def run_news_pipeline(db, proxy):
+    """执行新闻抓取和处理流水线"""
+    try:
+        print("[News] 开始新闻抓取...")
+
+        # 1. 抓取新闻
+        scraper = CryptoCompareScraper(db, proxy=proxy)
+        news_items = scraper.fetch(limit=10)
+
+        for item in news_items:
+            db.save_news_item(item)
+
+        print(f"[News] 抓取了 {len(news_items)} 条新闻")
+
+        # 2. 提纯内容
+        refiner = Refiner(db)
+        refined_count = 0
+
+        recent_news = db.get_recent_news_items(limit=10)
+        for news_item in recent_news:
+            if news_item.get("status") == "NEW":
+                refined = refiner.refine(news_item["id"], news_item["url"])
+                if refined:
+                    db.save_refined_doc(refined)
+                    refined_count += 1
+
+        print(f"[News] 提纯了 {refined_count} 条文档")
+
+        # 3. 分析事件
+        analyzer = NewsAnalyzer(db)
+        signal_count = 0
+
+        for doc in recent_news:
+            if doc.get("status") == "COMPLETED":
+                signal = analyzer.extract_signals(doc)
+                if signal:
+                    db.save_news_signal(signal)
+                    signal_count += 1
+
+        print(f"[News] 提取了 {signal_count} 个信号")
+
+        # 4. 清理过期信号
+        db.deactivate_expired_signals()
+
+        print("[News] 新闻流水线完成")
+
+    except Exception as e:
+        print(f"[News Error] 新闻流水线失败: {e}")
+        import traceback
+
+        traceback.print_exc()
 
 
 def run_backend():
@@ -259,7 +571,7 @@ def run_backend():
         return
 
     print("=" * 50)
-    print("PriceAction Backend Service")
+    print("PriceAction Backend Service (Async Architecture)")
     print("=" * 50)
     print(f"Environment: {settings.environment}")
     print(f"Log Level: {settings.log_level}")
@@ -281,21 +593,52 @@ def run_backend():
 
         traceback.print_exc()
 
+    # 首次启动时执行一次新闻抓取
+    print("\n执行首次新闻抓取...")
+    try:
+        from database import DatabaseManager
+
+        db = DatabaseManager("./data.db")
+        run_news_pipeline(db, settings.proxy)
+        db.close()
+        print("首次新闻抓取完成")
+    except Exception as e:
+        print(f"[WARNING] 首次新闻抓取失败: {e}")
+
     print("")
     print("后端服务运行中 (按 Ctrl+C 停止)")
     print("")
 
     try:
+        news_counter = 0
+
         while True:
-            # 每15分钟执行一次分析
             time.sleep(900)  # 15分钟 = 900秒
 
-            print("")
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 执行定时分析...")
+            # 并发保护：防止上一轮分析未完成时启动新一轮
+            if not _analysis_lock.acquire(blocking=False):
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [SKIP] 上一轮分析仍在进行中")
+                continue
+
             try:
-                run_analysis_cycle(settings)
-            except Exception as e:
-                print(f"[ERROR] 定时分析失败: {e}")
+                print("")
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 执行定时分析...")
+                try:
+                    run_analysis_cycle(settings)
+                except Exception as e:
+                    print(f"[ERROR] 定时分析失败: {e}")
+
+                # 每2个周期（30分钟）执行一次新闻抓取
+                news_counter += 1
+                if news_counter >= 2:
+                    news_counter = 0
+                    from database import DatabaseManager
+
+                    db = DatabaseManager("./data.db")
+                    run_news_pipeline(db, settings.proxy)
+                    db.close()
+            finally:
+                _analysis_lock.release()  # 确保释放锁
 
     except KeyboardInterrupt:
         print("\n正在停止后端服务...")
@@ -320,7 +663,7 @@ def run_frontend():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="PriceAction - AI Price Action Analyzer")
+    parser = argparse.ArgumentParser(description="PriceAction - AI Price Action Analyzer (Async)")
     parser.add_argument(
         "--mode",
         choices=["backend", "frontend", "both"],

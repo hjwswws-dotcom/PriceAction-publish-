@@ -109,8 +109,9 @@ def identify_pattern_zones(
     recent_df = df.tail(30)  # 最近30根K线
     recent_high = recent_df["high"].max()
     recent_low = recent_df["low"].min()
-    start_time = recent_df.iloc[0]["datetime"]
-    end_time = recent_df.iloc[-1]["datetime"]
+    # 使用索引获取时间（因为datetime已经是索引）
+    start_time = recent_df.index[0]
+    end_time = recent_df.index[-1]
 
     # 根据形态类型确定区域
     pattern_lower = pattern_name.lower() if pattern_name else ""
@@ -197,8 +198,8 @@ def identify_pattern_zones(
             highs = swing_points["swing_highs"][-2:]  # 最近两个高点
             zones.append(
                 {
-                    "x0": recent_df.iloc[highs[0][0]]["datetime"],
-                    "x1": recent_df.iloc[highs[1][0]]["datetime"],
+                    "x0": recent_df.index[highs[0][0]],
+                    "x1": recent_df.index[highs[1][0]],
                     "y0": min(highs[0][1], highs[1][1]) * 0.998,
                     "y1": max(highs[0][1], highs[1][1]) * 1.002,
                     "type": "pattern_zone",
@@ -211,8 +212,8 @@ def identify_pattern_zones(
             lows = swing_points["swing_lows"][-2:]  # 最近两个低点
             zones.append(
                 {
-                    "x0": recent_df.iloc[lows[0][0]]["datetime"],
-                    "x1": recent_df.iloc[lows[1][0]]["datetime"],
+                    "x0": recent_df.index[lows[0][0]],
+                    "x1": recent_df.index[lows[1][0]],
                     "y0": min(lows[0][1], lows[1][1]) * 0.998,
                     "y1": max(lows[0][1], lows[1][1]) * 1.002,
                     "type": "pattern_zone",

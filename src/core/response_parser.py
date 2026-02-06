@@ -95,7 +95,8 @@ class ResponseParser:
         # 尝试多种模式
         patterns = [
             r"---JSON_DATA_START---\s*(.*?)\s*---JSON_DATA_END---",
-            r"\{[^{}]*" + r"\{[^{}]*\}" * 3 + r"[^{}]*\}",  # 简单嵌套JSON
+            r"```json\s*(.*?)\s*```",  # 匹配markdown代码块
+            r"```\s*(\{.*?\})\s*```",  # 匹配无语言标记的代码块
         ]
 
         for pattern in patterns:
@@ -107,12 +108,10 @@ class ResponseParser:
                 json_text = re.sub(r"\s*```\s*$", "", json_text, flags=re.MULTILINE)
                 return json_text
 
-        # 尝试直接解析整个响应
-        try:
-            json.loads(text)
-            return text
-        except:
-            pass
+        # 最后尝试：找最外层的大括号
+        brace_match = re.search(r"\{[\s\S]*\}", text)
+        if brace_match:
+            return brace_match.group(0)
 
         return None
 
@@ -126,6 +125,8 @@ class ResponseParser:
                 return {
                     "success": False,
                     "error": "无法找到JSON数据",
+                    "analysis_text": response_text,
+                    "timeframe_states": {},
                 }
 
             # 使用安全的JSON解析
@@ -134,6 +135,8 @@ class ResponseParser:
                 return {
                     "success": False,
                     "error": "JSON解析失败",
+                    "analysis_text": response_text,
+                    "timeframe_states": {},
                 }
 
             # 提取分析文本
@@ -169,4 +172,6 @@ class ResponseParser:
             return {
                 "success": False,
                 "error": f"解析错误: {e}",
+                "analysis_text": response_text if "response_text" in dir() else "",
+                "timeframe_states": {},
             }

@@ -12,10 +12,10 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 import streamlit as st
-from database import DatabaseManager
 from src.config.settings import get_settings
 from datetime import datetime
-import json
+from frontend.utils.parsers import parse_json_field
+from frontend.utils.db import get_db
 
 
 def get_action_state_icon(state: str) -> tuple:
@@ -45,10 +45,8 @@ def show():
 
     # 获取所有状态
     try:
-        db = DatabaseManager(get_settings().database_path)
-        db._ensure_connection()  # 确保在当前线程建立连接
+        db = get_db()
         states = db.get_all_states()
-        db.close()
     except Exception as e:
         st.error(f"数据库连接失败: {e}")
         return
@@ -65,28 +63,13 @@ def show():
         action = state.get("actionPlan")
         active_raw = state.get("activeNarrative", "{}")
 
-        # 解析JSON字符串（如果需要）
-        if isinstance(active_raw, str):
-            try:
-                active = json.loads(active_raw)
-            except (json.JSONDecodeError, TypeError):
-                active = {}
-        else:
-            active = active_raw
+        # 使用统一工具函数解析JSON字段
+        active = parse_json_field(active_raw)
+        active = active if isinstance(active, dict) else {}
 
         # 解析actionPlan，兜底从activeNarrative提取
-        raw_action = state.get("actionPlan")
-        action = {}
-
-        if raw_action:
-            if isinstance(raw_action, str):
-                try:
-                    # 关键：将字符串转回字典
-                    action = json.loads(raw_action)
-                except Exception:
-                    action = {}
-            else:
-                action = raw_action
+        action_raw = parse_json_field(state.get("actionPlan"))
+        action = action_raw if isinstance(action_raw, dict) else {}
 
         # 现在 action 确定是字典了，不再报错
         state_enum = action.get("state", "WAIT")
@@ -100,7 +83,7 @@ def show():
         reason = action.get("reason", "")
 
         # 兜底逻辑：从activeNarrative推导
-        if not raw_action:
+        if not action:
             state_enum = "WAIT"
             direction = None
             order_type = None
@@ -209,6 +192,12 @@ def show():
                     st.markdown(f"**AI分析**: {comment}")
                 else:
                     st.caption("无详细分析文本")
+
+                # 显示多周期共振信息
+                consensus_score = state.get("consensus_score", 0)
+                consensus_direction = state.get("consensus_direction", "NEUTRAL")
+                if consensus_score and consensus_direction != "NEUTRAL":
+                    st.markdown(f"**多周期共振**: {consensus_direction} ({consensus_score:.0%})")
 
             # 时间戳
             last_updated = state.get("last_updated", 0)

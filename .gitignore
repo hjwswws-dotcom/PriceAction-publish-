@@ -39,6 +39,9 @@ docs/
 !README.md
 !README_CONFIG.md
 
+# 历史备份（不上传）
+backpack/
+
 # 知识库
 knowledge_base/__pycache__/
 knowledge_base/vector_db/

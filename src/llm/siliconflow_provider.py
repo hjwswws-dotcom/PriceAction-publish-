@@ -260,7 +260,7 @@ class SiliconFlowProvider(LLMProvider):
 
         return {"success": False, "error": "Max retries exceeded", "raw_response": ""}
 
-    def _call_api(self, prompt: str, system_prompt: str = None) -> str:
+    def _call_api(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """
         调用硅基流动API
 
@@ -285,7 +285,7 @@ class SiliconFlowProvider(LLMProvider):
                 {"role": "user", "content": prompt},
             ],
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
+            "temperature": 0.3,
             "top_p": 1.0,
             "stream": False,
         }
@@ -524,6 +524,13 @@ When analyzing, you MUST consider the relationship between different timeframes:
 4. Always consider the trapped traders' perspective
 5. When uncertain, explicitly state the ambiguity
 """
+
+    def _get_multi_tf_system_prompt(self) -> str:
+        """获取多时间框架精简系统提示词"""
+        return """You are an Al Brooks Price Action expert. 
+Focus on: 1. Market Cycle 2. Specific Patterns (H1/H2, Wedge, MM) 3. Confluence.
+Always provide a concise Chinese analysis followed by the required JSON structure.
+If multiple timeframes conflict, prioritize the higher timeframe's trend."""
 
     def validate_response(self, response: str) -> bool:
         """
@@ -777,37 +784,25 @@ When analyzing, you MUST consider the relationship between different timeframes:
         Returns:
             格式化后的文本
         """
-        from datetime import datetime as dt_module
-
-        lines = []
-
-        # 只取最新的20根用于显示(避免token过多)
-        display_klines = klines[-20:] if len(klines) > 20 else klines
+        # 只取最新的15根，节省Token
+        display_klines = klines[-15:] if len(klines) > 15 else klines
+        lines = ["Time,O,H,L,C,V"]  # CSV格式表头
 
         for k in display_klines:
             try:
-                # 将UTC时间转换为本地时间（北京时间）
-                dt_str = k.get("datetime", "")
-                if dt_str and dt_str != "N/A":
-                    # 解析ISO 8601 UTC时间
-                    dt = dt_module.fromisoformat(dt_str.replace("Z", "+00:00"))
-                    # 转换为北京时间 (UTC+8)
-                    dt_local = dt.astimezone()
-                    dt_display = dt_local.strftime("%m-%d %H:%M")
+                # 时间转换
+                ts = k.get("timestamp", 0)
+                if ts:
+                    dt = datetime.fromtimestamp(int(float(ts)) / 1000)
+                    dt_display = dt.strftime("%m%d %H:%M")
                 else:
-                    ts = k.get("timestamp", 0)
-                    if ts:
-                        dt_local = dt_module.fromtimestamp(ts / 1000)
-                        dt_display = dt_local.strftime("%m-%d %H:%M")
-                    else:
-                        dt_display = "N/A"
+                    dt_display = "N/A"
 
+                # CSV格式：时间,开,高,低,收,量
                 lines.append(
-                    f"[{dt_display}] O:{k['open']:.2f} H:{k['high']:.2f} "
-                    f"L:{k['low']:.2f} C:{k['close']:.2f} V:{k['volume']:.2f}"
+                    f"{dt_display},{k['open']:.1f},{k['high']:.1f},{k['low']:.1f},{k['close']:.1f},{int(k['volume'])}"
                 )
-            except Exception as e:
-                logger.warning(f"Error formatting kline: {e}, data: {k}")
+            except:
                 continue
 
         return "\n".join(lines)
@@ -894,6 +889,8 @@ When analyzing, you MUST consider the relationship between different timeframes:
         symbol: str,
         timeframe_data: Dict[str, List[Dict]],
         current_states: Dict[str, Optional[Dict]],
+        rag_context: str = "",  # 新增
+        news_context: Optional[Dict] = None,  # 新增
     ) -> Dict[str, Any]:
         """
         执行多时间框架价格行为分析
@@ -902,6 +899,8 @@ When analyzing, you MUST consider the relationship between different timeframes:
             symbol: 交易对
             timeframe_data: 各时间框架的K线数据，格式为 {"15m": [...], "1h": [...], "1d": [...]}
             current_states: 各时间框架的当前状态，格式为 {"15m": {...}, "1h": {...}, "1d": {...}}
+            rag_context: RAG检索的上下文（可选）
+            news_context: 新闻上下文（可选）
 
         Returns:
             分析结果字典，包含所有时间框架的分析结果
@@ -915,10 +914,39 @@ When analyzing, you MUST consider the relationship between different timeframes:
         # 构建多时间框架Prompt
         prompt = self._build_multi_timeframe_prompt(symbol, timeframe_data, current_states)
 
+        # 【修复点】注入新闻（如果存在）
+        if news_context:
+            prompt = self.inject_news_context(prompt, news_context)
+
+        # 【修复点】注入RAG（如果存在）
+        if rag_context:
+            # 将RAG规则置于Prompt顶部
+            prompt = f"## 交易守则 (RAG):\n{rag_context}\n\n" + prompt
+
+        # 选择系统提示词（多周期使用精简版）
+        if rag_context:
+            system_prompt = (
+                self._get_multi_tf_system_prompt()
+                + "\n\n"
+                + RAG_SYSTEM_PROMPT_TEMPLATE.format(rag_context=rag_context)
+            )
+        elif news_context:
+            system_prompt = self.add_news_rules_to_system_prompt(self._get_multi_tf_system_prompt())
+        else:
+            system_prompt = self._get_multi_tf_system_prompt()
+
         # 调用API(带重试)
         for attempt in range(self.max_retries):
             try:
-                response_text = self._call_api(prompt)
+                response_text = self._call_api(prompt, system_prompt)
+
+                # 【修复点】在调用parser前修复JSON截断
+                if (
+                    "---JSON_DATA_START---" in response_text
+                    and "---JSON_DATA_END---" not in response_text
+                ):
+                    logger.warning("检测到JSON被截断，尝试补全末尾...")
+                    response_text += "\n}\n---JSON_DATA_END---"
 
                 # 使用Response Parser解析多时间框架格式
                 parse_result = parser.parse_multi_timeframe(response_text)
@@ -1232,136 +1260,62 @@ When analyzing, you MUST consider the relationship between different timeframes:
         Returns:
             Prompt文本
         """
-        # 格式化各时间框架的K线数据
-        klines_15m = self._format_klines(timeframe_data.get("15m", []))
-        klines_1h = self._format_klines(timeframe_data.get("1h", []))
+        # 格式化各时间框架的K线数据（大周期优先）
         klines_1d = self._format_klines(timeframe_data.get("1d", []))
+        klines_1h = self._format_klines(timeframe_data.get("1h", []))
+        klines_15m = self._format_klines(timeframe_data.get("15m", []))
 
         # 格式化各时间框架的当前状态
-        state_15m = (
-            json.dumps(current_states.get("15m"), indent=2, ensure_ascii=False)
-            if current_states.get("15m")
-            else "无历史状态，首次分析"
+        state_1d = (
+            json.dumps(current_states.get("1d"), indent=2, ensure_ascii=False)
+            if current_states.get("1d")
+            else "首次分析"
         )
         state_1h = (
             json.dumps(current_states.get("1h"), indent=2, ensure_ascii=False)
             if current_states.get("1h")
-            else "无历史状态，首次分析"
+            else "首次分析"
         )
-        state_1d = (
-            json.dumps(current_states.get("1d"), indent=2, ensure_ascii=False)
-            if current_states.get("1d")
-            else "无历史状态，首次分析"
+        state_15m = (
+            json.dumps(current_states.get("15m"), indent=2, ensure_ascii=False)
+            if current_states.get("15m")
+            else "首次分析"
         )
 
-        prompt = f"""请对以下交易对进行多时间框架价格行为分析。
+        prompt = f"""请对{symbol}进行多时间框架价格行为分析。
 
-## 交易信息
-- 交易对: {symbol}
-- 分析时间框架: 15分钟 / 1小时 / 日线
-
----
-
-## 【15分钟周期】
-
-### 当前状态参考
-{state_15m}
-
-### OHLCV数据(最新20根):
-{klines_15m}
-
----
-
-## 【1小时周期】
-
-### 当前状态参考
-{state_1h}
-
-### OHLCV数据(最新20根):
-{klines_1h}
-
----
-
-## 【日线周期】
-
-### 当前状态参考
-{state_1d}
-
-### OHLCV数据(最新20根):
+## 日线周期 (1d)
+状态: {state_1d}
+K线:
 {klines_1d}
 
----
+## 1小时周期 (1h)
+状态: {state_1h}
+K线:
+{klines_1h}
 
-## 多时间框架分析要求
+## 15分钟周期 (15m)
+状态: {state_15m}
+K线:
+{klines_15m}
 
-请按照以下结构进行综合分析：
+## 分析要求
+请按以下格式输出（每周期分析不超过200字）：
 
-### 第一部分：详细分析文本（中文）
+### 日线分析
+[市场结构、趋势、关键形态]
 
-对每个时间框架分别进行完整的价格行为分析，包括：
+### 1小时分析
+[与大周期关系、形态演变]
 
-1. **15分钟周期分析**
-   - 市场结构评估（趋势分类、阶段、关键价位）
-   - 逐棒分析（近期价格行为的详细解读）
-   - 形态识别（High/Low 1,2,3、楔形、双顶双底等）
-   - 概率评估与风险回报计算
-   - 信号棒评估
+### 15分钟分析
+[信号、入场条件、风险回报]
 
-2. **1小时周期分析**
-   - 同上结构
-
-3. **日线周期分析**
-   - 同上结构
-
-4. **多时间框架共振评估**
-   - 三个时间框架的趋势是否一致？
-   - 是否存在多周期共振的交易机会？
-   - 日线趋势如何影响15分钟的交易决策？
-   - 识别关键的 confluence zones（共振区域）
-
-### 第二部分：JSON数据（面向系统）
-
-针对每个时间框架，分别输出JSON数据：
+### 多周期共振
+[趋势是否一致、置信度调整]
 
 ---JSON_DATA_START---
-{{
-  "15m": {{
-    "marketCycle": "BULL_TREND",
-    "activeNarrative": {{
-      "pattern_name": "High 2 Bull Flag",
-      "status": "FORMING",
-      "probability_value": 0.6,
-      "risk_reward": 2.0
-    }}
-  }},
-  "1h": {{
-    "marketCycle": "BULL_TREND",
-    "activeNarrative": {{
-      "pattern_name": "Trend Continuation",
-      "status": "IN_PROGRESS",
-      "probability_value": 0.65
-    }}
-  }},
-  "1d": {{
-    "marketCycle": "BULL_TREND",
-    "activeNarrative": {{
-      "pattern_name": "Strong Uptrend",
-      "status": "IN_PROGRESS",
-      "probability_value": 0.7
-    }}
-  }},
-  "multi_timeframe_analysis": {{
-    "trend_alignment": "ALIGNED",
-    "confluence_score": 0.8,
-    "共振交易机会": "多周期共振，建议积极关注"
-  }}
-}}
----JSON_DATA_END---
-
-### 重要提示：
-1. 必须为每个时间框架分别提供分析
-2. JSON中包含 "multi_timeframe_analysis" 字段描述共振情况
-3. 如果多个时间框架趋势一致，增加置信度
-4. 如果存在冲突，降低置信度并说明原因"""
+{{"1d": {{"marketCycle": "...", "activeNarrative": {{"pattern_name": "...", "probability_value": 0.x}}}}, "1h": {{...}}, "15m": {{...}}, "multi_timeframe_analysis": {{"alignment": "ALIGNED|CONFLICT", "confidence_adj": -0.1}}}}
+---JSON_DATA_END---"""
 
         return prompt

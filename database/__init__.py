@@ -5,8 +5,31 @@ Simple wrapper for SQLite database access
 
 import sqlite3
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
+from datetime import datetime
+
+
+def _safe_json_loads(value: Any, default: Any = None) -> Any:
+    """安全解析 JSON 字符串
+
+    Args:
+        value: 待解析的值（字符串、字典、列表）
+        default: 解析失败时的默认值
+
+    Returns:
+        解析后的对象或默认值
+    """
+    if default is None:
+        default = []
+    if value is None:
+        return default
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default
 
 
 class DatabaseManager:
@@ -18,10 +41,244 @@ class DatabaseManager:
         self._ensure_connection()
 
     def _ensure_connection(self):
-        """Ensure database connection is valid"""
+        """Ensure database connection is valid (支持多线程)"""
         if not hasattr(self, "_conn") or self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn = sqlite3.connect(
+                str(self.db_path),
+                timeout=30,
+                check_same_thread=False,
+            )
             self._conn.row_factory = sqlite3.Row
+            # 启用 WAL 模式，大幅减少读写冲突
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA busy_timeout=30000")
+            except Exception as e:
+                print(f"[DB] WAL mode setup warning: {e}")
+
+    def _dict_from_item(self, item) -> Dict[str, Any]:
+        """Convert Pydantic model or dict to dictionary"""
+        if hasattr(item, "model_dump"):
+            return item.model_dump()
+        return dict(item) if item else {}
+
+    # ==================== News APIs ====================
+
+    def save_news_item(self, item) -> int:
+        """Save a news item to the database
+
+        Args:
+            item: Pydantic model or dict containing news data
+
+        Returns:
+            Inserted news item ID, or -1 on failure
+        """
+        try:
+            data = self._dict_from_item(item)
+
+            self._ensure_connection()
+            cursor = self._conn.execute(
+                """INSERT OR IGNORE INTO news_items (
+                    id, source, source_item_id, title, url,
+                    published_time_utc, ingest_time_utc,
+                    content, language,
+                    votes_positive, votes_negative, votes_installed,
+                    domain, kind, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    data.get("id", ""),
+                    data.get("source", ""),
+                    data.get("source_item_id", ""),
+                    data.get("title", ""),
+                    data.get("url", ""),
+                    data.get("published_time_utc", 0),
+                    data.get("ingest_time_utc", 0),
+                    data.get("content", ""),
+                    data.get("language", "en"),
+                    data.get("votes_positive", 0),
+                    data.get("votes_negative", 0),
+                    data.get("votes_installed", 0),
+                    data.get("domain", ""),
+                    data.get("kind", ""),
+                    data.get("status", "NEW"),
+                    data.get("created_at", int(datetime.now().timestamp() * 1000)),
+                    data.get("updated_at", int(datetime.now().timestamp() * 1000)),
+                ),
+            )
+            self._conn.commit()
+            return cursor.lastrowid if cursor.lastrowid else -1
+        except Exception as e:
+            print(f"Error saving news item: {e}")
+            return -1
+
+    def get_recent_news_items(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get recent news items
+
+        Args:
+            limit: Maximum number of items to return
+
+        Returns:
+            List of news item dictionaries
+        """
+        try:
+            self._ensure_connection()
+            cursor = self._conn.cursor()
+            cursor.execute(
+                "SELECT * FROM news_items ORDER BY published_time_utc DESC LIMIT ?", (limit,)
+            )
+            items = []
+            for row in cursor.fetchall():
+                item = dict(row)
+                item["related_assets"] = _safe_json_loads(item.get("related_assets"), [])
+                items.append(item)
+            return items
+        except Exception as e:
+            print(f"Error getting recent news items: {e}")
+            return []
+
+    def save_refined_doc(self, doc) -> int:
+        """Save a refined document to the database
+
+        Args:
+            doc: Pydantic model or dict containing refined document data
+
+        Returns:
+            Inserted document ID, or -1 on failure
+        """
+        try:
+            data = self._dict_from_item(doc)
+
+            self._ensure_connection()
+            cursor = self._conn.execute(
+                """INSERT INTO refined_docs (
+                    id, news_id, url, title, markdown_content,
+                    summary, key_entities, quotes, status,
+                    error_message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    data.get("id", ""),
+                    data.get("news_id", ""),
+                    data.get("url", ""),
+                    data.get("title", ""),
+                    data.get("markdown_content", ""),
+                    data.get("summary", ""),
+                    json.dumps(data.get("key_entities", [])),
+                    json.dumps(data.get("quotes", [])),
+                    data.get("status", "PENDING"),
+                    data.get("error_message", ""),
+                    data.get("created_at", int(datetime.now().timestamp() * 1000)),
+                    data.get("updated_at", int(datetime.now().timestamp() * 1000)),
+                ),
+            )
+            self._conn.commit()
+            return cursor.lastrowid if cursor.lastrowid else -1
+        except Exception as e:
+            print(f"Error saving refined doc: {e}")
+            return -1
+
+    def save_news_signal(self, signal) -> int:
+        """Save a news signal to the database
+
+        Args:
+            signal: Pydantic model or dict containing news signal data
+
+        Returns:
+            Inserted signal ID, or -1 on failure
+        """
+        try:
+            data = self._dict_from_item(signal)
+
+            self._ensure_connection()
+            cursor = self._conn.execute(
+                """INSERT INTO news_signals (
+                    signal_id, event_type, one_line_thesis, assets,
+                    direction, confidence, timeframe, impact_volatility,
+                    tail_risk, news_ids, evidence_urls, is_active,
+                    created_time_utc, expires_time_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    data.get("signal_id", ""),
+                    data.get("event_type", ""),
+                    data.get("one_line_thesis", ""),
+                    json.dumps(data.get("assets", [])),
+                    data.get("direction", ""),
+                    data.get("confidence", 0),
+                    data.get("timeframe", "hours"),
+                    data.get("impact_volatility", 1),
+                    data.get("tail_risk", 1),
+                    json.dumps(data.get("news_ids", [])),
+                    json.dumps(data.get("evidence_urls", [])),
+                    data.get("is_active", 1),
+                    data.get("created_time_utc", int(datetime.now().timestamp() * 1000)),
+                    data.get("expires_time_utc"),
+                ),
+            )
+            self._conn.commit()
+            return cursor.lastrowid if cursor.lastrowid else -1
+        except Exception as e:
+            print(f"Error saving news signal: {e}")
+            return -1
+
+    def get_high_impact_signals(
+        self, impact_threshold: float, tail_risk_threshold: float, limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Get high impact news signals
+
+        Args:
+            impact_threshold: Minimum impact volatility threshold
+            tail_risk_threshold: Minimum tail risk score threshold
+            limit: Maximum number of signals to return
+
+        Returns:
+            List of high impact signal dictionaries
+        """
+        try:
+            self._ensure_connection()
+            cursor = self._conn.execute(
+                """SELECT * FROM news_signals
+                   WHERE impact_volatility >= ? AND tail_risk >= ? AND is_active = 1
+                   ORDER BY impact_volatility DESC, tail_risk DESC
+                   LIMIT ?""",
+                (impact_threshold, tail_risk_threshold, limit),
+            )
+            signals = []
+            for row in cursor.fetchall():
+                signal = dict(row)
+                signal["assets"] = _safe_json_loads(signal.get("assets"), [])
+                signal["news_ids"] = _safe_json_loads(signal.get("news_ids"), [])
+                signal["evidence_urls"] = _safe_json_loads(signal.get("evidence_urls"), [])
+                signals.append(signal)
+            return signals
+        except Exception as e:
+            print(f"Error getting high impact signals: {e}")
+            return []
+
+    def deactivate_expired_signals(self) -> int:
+        """Deactivate all expired signals
+
+        Returns:
+            Number of signals deactivated
+        """
+        try:
+            from datetime import datetime
+
+            self._ensure_connection()
+            current_time = int(datetime.now().timestamp() * 1000)
+
+            cursor = self._conn.execute(
+                """UPDATE news_signals SET is_active = 0
+                   WHERE is_active = 1 AND expires_time_utc IS NOT NULL AND expires_time_utc < ?""",
+                (current_time,),
+            )
+            self._conn.commit()
+            deactivated_count = cursor.rowcount
+
+            print(f"Deactivated {deactivated_count} expired signals")
+            return deactivated_count
+        except Exception as e:
+            print(f"Error deactivating expired signals: {e}")
+            return 0
 
     def close(self):
         """Close database connection"""
@@ -98,11 +355,7 @@ class DatabaseManager:
             signals = []
             for row in cursor.fetchall():
                 signal = dict(row)
-                if signal.get("signal_checks"):
-                    try:
-                        signal["signal_checks"] = json.loads(signal["signal_checks"])
-                    except:
-                        signal["signal_checks"] = {}
+                signal["signal_checks"] = _safe_json_loads(signal.get("signal_checks"), {})
                 signals.append(signal)
             return signals
         except Exception as e:
@@ -257,11 +510,7 @@ class DatabaseManager:
             row = cursor.fetchone()
             if row:
                 result = dict(row)
-                if result.get("r_multiple_plan"):
-                    try:
-                        result["r_multiple_plan"] = json.loads(result["r_multiple_plan"])
-                    except:
-                        result["r_multiple_plan"] = {}
+                result["r_multiple_plan"] = _safe_json_loads(result.get("r_multiple_plan"), {})
                 return result
             return None
         except Exception as e:
@@ -288,11 +537,7 @@ class DatabaseManager:
             results = []
             for row in cursor.fetchall():
                 result = dict(row)
-                if result.get("r_multiple_plan"):
-                    try:
-                        result["r_multiple_plan"] = json.loads(result["r_multiple_plan"])
-                    except:
-                        result["r_multiple_plan"] = {}
+                result["r_multiple_plan"] = _safe_json_loads(result.get("r_multiple_plan"), {})
                 results.append(result)
             return results
         except Exception as e:
@@ -353,13 +598,9 @@ class DatabaseManager:
             signals = []
             for row in cursor.fetchall():
                 signal = dict(row)
-                signal["assets"] = json.loads(signal["assets"]) if signal.get("assets") else []
-                signal["news_ids"] = (
-                    json.loads(signal["news_ids"]) if signal.get("news_ids") else []
-                )
-                signal["evidence_urls"] = (
-                    json.loads(signal["evidence_urls"]) if signal.get("evidence_urls") else []
-                )
+                signal["assets"] = _safe_json_loads(signal.get("assets"), [])
+                signal["news_ids"] = _safe_json_loads(signal.get("news_ids"), [])
+                signal["evidence_urls"] = _safe_json_loads(signal.get("evidence_urls"), [])
                 signals.append(signal)
             return signals
         except Exception as e:
@@ -380,13 +621,9 @@ class DatabaseManager:
             signals = []
             for row in cursor.fetchall():
                 signal = dict(row)
-                signal["assets"] = json.loads(signal["assets"]) if signal.get("assets") else []
-                signal["news_ids"] = (
-                    json.loads(signal["news_ids"]) if signal.get("news_ids") else []
-                )
-                signal["evidence_urls"] = (
-                    json.loads(signal["evidence_urls"]) if signal.get("evidence_urls") else []
-                )
+                signal["assets"] = _safe_json_loads(signal.get("assets"), [])
+                signal["news_ids"] = _safe_json_loads(signal.get("news_ids"), [])
+                signal["evidence_urls"] = _safe_json_loads(signal.get("evidence_urls"), [])
                 signals.append(signal)
             return signals
         except Exception as e:

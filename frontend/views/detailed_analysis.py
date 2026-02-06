@@ -12,9 +12,10 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 import streamlit as st
-from database import DatabaseManager
 from src.config.settings import get_settings
 from frontend.components.chart_display import display_chart_with_controls
+from frontend.utils.parsers import parse_json_field
+from frontend.utils.db import get_db
 
 
 def show():
@@ -29,10 +30,8 @@ def show():
 
     # 获取所有交易对状态
     try:
-        db = DatabaseManager(get_settings().database_path)
-        db._ensure_connection()  # 确保在当前线程建立连接
+        db = get_db()
         states = db.get_all_states()
-        db.close()
     except Exception as e:
         st.error(f"数据库连接失败: {e}")
         return
@@ -54,23 +53,11 @@ def show():
         return
 
     # 解析JSON字段
-    import json
+    active = parse_json_field(state.get("activeNarrative"))
+    active = active if isinstance(active, dict) else {}
 
-    active_raw = state.get("activeNarrative", "{}")
-    try:
-        active = json.loads(active_raw) if isinstance(active_raw, str) else (active_raw or {})
-    except (json.JSONDecodeError, TypeError):
-        active = {}
-
-    alternative_raw = state.get("alternativeNarrative", "{}")
-    try:
-        alternative = (
-            json.loads(alternative_raw)
-            if isinstance(alternative_raw, str)
-            else (alternative_raw or {})
-        )
-    except (json.JSONDecodeError, TypeError):
-        alternative = {}
+    alternative = parse_json_field(state.get("alternativeNarrative"))
+    alternative = alternative if isinstance(alternative, dict) else {}
 
     # 显示更新时间和市场周期
     col1, col2, col3 = st.columns([2, 1, 1])
