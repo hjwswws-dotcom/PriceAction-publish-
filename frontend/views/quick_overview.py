@@ -18,6 +18,41 @@ from frontend.utils.db import get_db
 from frontend.utils.timezone import utc_ms_to_beijing_str
 
 
+def _extract_timeframe_analysis(full_text: str, timeframe: str) -> str:
+    """从完整分析文本中提取特定周期的内容"""
+    if not full_text:
+        return ""
+
+    # 周期标识映射
+    tf_markers = {
+        "15m": ["15分钟", "15m", "15 分钟", "短期"],
+        "1h": ["1小时", "1h", "1 小时", "中期", "小时级别"],
+        "1d": ["日线", "1d", "日级别", "长期", "日周期"],
+    }
+
+    markers = tf_markers.get(timeframe, [])
+    lines = full_text.split("\n")
+
+    # 查找包含该周期关键词的段落
+    relevant_lines = []
+    in_section = False
+
+    for line in lines:
+        # 检查是否进入该周期的段落
+        if any(marker in line for marker in markers):
+            in_section = True
+        # 检查是否进入其他周期的段落
+        elif any(
+            marker in line for tf, ms in tf_markers.items() if tf != timeframe for marker in ms
+        ):
+            in_section = False
+
+        if in_section and line.strip():
+            relevant_lines.append(line)
+
+    return "\n".join(relevant_lines) if relevant_lines else f"（{timeframe} 周期暂无独立分析）"
+
+
 def get_action_state_icon(state: str) -> tuple:
     """根据行动状态返回图标和颜色"""
     state_map = {
@@ -187,11 +222,14 @@ def show():
 
             # 折叠显示详细分析
             with st.expander("查看主观详细分析 (Subjective Analysis)"):
-                # ✅ 展示完整的AI分析文本（来自analysis_text字段）
-                analysis_text = state.get("analysis_text", "")
-                if analysis_text:
+                # ✅ 展示当前周期相关的AI分析文本
+                full_analysis = state.get("analysis_text", "")
+                timeframe = state.get("timeframe", "15m")
+                filtered_analysis = _extract_timeframe_analysis(full_analysis, timeframe)
+
+                if full_analysis:
                     st.markdown("**📖 AI完整分析**")
-                    st.markdown(analysis_text)
+                    st.markdown(filtered_analysis)
                 else:
                     st.caption("无完整分析文本")
 

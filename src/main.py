@@ -253,6 +253,43 @@ def _save_consolidated_state(
         db._conn.commit()
 
 
+def _extract_and_save_signals(symbol: str, timeframe_states: Dict[str, Dict], db):
+    """从分析结果中提取交易信号并保存"""
+    import time as time_module
+
+    for tf, state in timeframe_states.items():
+        active = state.get("activeNarrative", {})
+        action = state.get("actionPlan", {})
+
+        # 只有当状态为 TRIGGERED 或 ENTER_NOW 时才生成信号
+        pattern_status = active.get("status", "")
+        action_state = action.get("state", "")
+
+        if pattern_status == "TRIGGERED" or action_state == "ENTER_NOW":
+            key_levels = active.get("key_levels", {})
+
+            signal = {
+                "symbol": symbol,
+                "timeframe": tf,
+                "timestamp": int(time_module.time() * 1000),
+                "signal_type": "PATTERN_TRIGGERED",
+                "direction": action.get("direction", "LONG"),
+                "entry_price": key_levels.get("entry_trigger", 0),
+                "stop_loss": key_levels.get("invalidation_level", 0),
+                "take_profit": key_levels.get("profit_target_1", 0),
+                "confidence": state.get("signalConfidence", 50),
+                "pattern_name": active.get("pattern_name", "Unknown"),
+                "status": "ACTIVE",
+                "created_at": int(time_module.time() * 1000),
+            }
+
+            # 保存信号
+            db.save_trading_signal(signal)
+            print(
+                f"  [SIGNAL] {symbol} {tf}: {active.get('pattern_name')} - {action.get('direction')}"
+            )
+
+
 def _analyze_single_timeframe(symbol, tf, klines, db, llm):
     """单周期降级分析"""
     try:
@@ -414,7 +451,10 @@ async def process_symbol_async(
             analysis_text=parse_result.get("analysis_text", ""),
         )
 
-        # 8. 输出结果摘要
+        # 8. 提取并保存交易信号
+        _extract_and_save_signals(symbol, timeframe_states, db)
+
+        # 9. 输出结果摘要
         for tf in valid_timeframes.keys():
             if tf in timeframe_states:
                 current_price = valid_timeframes[tf][-1].get("close", 0)
@@ -515,25 +555,30 @@ def run_news_pipeline(db, proxy):
         refined_count = 0
 
         recent_news = db.get_recent_news_items(limit=10)
+
         for news_item in recent_news:
             if news_item.get("status") == "NEW":
                 refined = refiner.refine(news_item["id"], news_item["url"])
                 if refined:
                     db.save_refined_doc(refined)
+                    # ✅ 修复：更新 news_items 的状态为 REFINED
+                    db.update_news_item_status(news_item["id"], "REFINED")
                     refined_count += 1
 
         print(f"[News] 提纯了 {refined_count} 条文档")
 
-        # 3. 分析事件
+        # 3. 分析事件 - ✅ 修复：从 refined_docs 表获取已提纯的文档
         analyzer = NewsAnalyzer(db)
         signal_count = 0
 
-        for doc in recent_news:
-            if doc.get("status") == "COMPLETED":
-                signal = analyzer.extract_signals(doc)
-                if signal:
-                    db.save_news_signal(signal)
-                    signal_count += 1
+        refined_docs = db.get_refined_docs_for_analysis(limit=10)
+        for doc in refined_docs:
+            signal = analyzer.extract_signals(doc)
+            if signal:
+                db.save_news_signal(signal)
+                # 更新 news_items 状态为 COMPLETED
+                db.update_news_item_status(doc.get("news_id"), "COMPLETED")
+                signal_count += 1
 
         print(f"[News] 提取了 {signal_count} 个信号")
 

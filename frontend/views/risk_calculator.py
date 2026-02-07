@@ -180,8 +180,12 @@ def show():
             # 风险评估参数（胜率使用预填值）
             col5, col6 = st.columns(2)
             with col5:
-                # 计算滑块value，确保在10-90范围内
-                win_value = int(default_winrate * 100) if 0 < default_winrate <= 1 else 50
+                # 计算滑块value，确保在10-90范围内，修复None类型检查
+                win_value = (
+                    int(default_winrate * 100)
+                    if default_winrate and 0 < default_winrate <= 1
+                    else 50
+                )
                 win_probability = (
                     st.slider(
                         "估计胜率 (%)",
@@ -250,13 +254,68 @@ def show():
 
                         analysis_id = db.create_risk_analysis(trade_plan)
 
-                        # 2. 获取市场数据并计算基础风险指标
-                        klines_15m = ra.fetcher.fetch_ohlcv(symbol, "15m", limit=50)
-                        klines_1h = ra.fetcher.fetch_ohlcv(symbol, "1h", limit=50)
-                        klines_1d = ra.fetcher.fetch_ohlcv(symbol, "1d", limit=50)
+                        # 2. 获取市场数据 - 优先使用 ResearchAssistant，否则降级使用 CCXT
+                        try:
+                            if ra is not None and hasattr(ra, "fetcher") and ra.fetcher is not None:
+                                klines_15m = ra.fetcher.fetch_ohlcv(symbol, "15m", limit=50)
+                                klines_1h = ra.fetcher.fetch_ohlcv(symbol, "1h", limit=50)
+                                klines_1d = ra.fetcher.fetch_ohlcv(symbol, "1d", limit=50)
+                                market_context = ra.fetcher.fetch_market_context(symbol)
+                            else:
+                                # 降级：使用 CCXT 直接获取数据
+                                import ccxt
 
-                        # Phase 5.2: 获取②类市场数据
-                        market_context = ra.fetcher.fetch_market_context(symbol)
+                                exchange = ccxt.bybit({"options": {"defaultType": "swap"}})
+                                ohlcv_15m = exchange.fetch_ohlcv(
+                                    symbol.replace(":USDT", "/USDT"), "15m", limit=50
+                                )
+                                ohlcv_1h = exchange.fetch_ohlcv(
+                                    symbol.replace(":USDT", "/USDT"), "1h", limit=50
+                                )
+                                ohlcv_1d = exchange.fetch_ohlcv(
+                                    symbol.replace(":USDT", "/USDT"), "1d", limit=50
+                                )
+
+                                klines_15m = [
+                                    {
+                                        "timestamp": r[0],
+                                        "open": r[1],
+                                        "high": r[2],
+                                        "low": r[3],
+                                        "close": r[4],
+                                        "volume": r[5],
+                                    }
+                                    for r in ohlcv_15m
+                                ]
+                                klines_1h = [
+                                    {
+                                        "timestamp": r[0],
+                                        "open": r[1],
+                                        "high": r[2],
+                                        "low": r[3],
+                                        "close": r[4],
+                                        "volume": r[5],
+                                    }
+                                    for r in ohlcv_1h
+                                ]
+                                klines_1d = [
+                                    {
+                                        "timestamp": r[0],
+                                        "open": r[1],
+                                        "high": r[2],
+                                        "low": r[3],
+                                        "close": r[4],
+                                        "volume": r[5],
+                                    }
+                                    for r in ohlcv_1d
+                                ]
+                                market_context = {"symbol": symbol}
+                        except Exception as fetch_error:
+                            st.warning(f"获取K线数据失败，使用默认值: {fetch_error}")
+                            klines_15m = []
+                            klines_1h = []
+                            klines_1d = []
+                            market_context = {"symbol": symbol}
 
                         # 3. 计算风险指标
                         risk_metrics = risk_analyzer.calculate_risk_metrics(
@@ -272,22 +331,31 @@ def show():
                         )
 
                         # Phase 5.1: 如启用，获取分析师AI上下文
-                        if use_analyst_context:
+                        if use_analyst_context and ra is not None and hasattr(ra, "db"):
                             analyst_state = ra.db.get_state(symbol, timeframe)
                             if analyst_state:
                                 from data.market_context import AnalystContext
 
                                 analyst_ctx = AnalystContext.from_state(analyst_state)
                                 if analyst_ctx:
-                                    market_context.analyst_context = analyst_ctx.to_dict()
+                                    market_context["analyst_context"] = analyst_ctx.to_dict()
 
-                        # 4. 调用AI进行风险分析
-                        ai_analysis = ra.analyze_trade_risk(
-                            symbol=symbol,
-                            trade_plan=trade_plan,
-                            risk_metrics=risk_metrics,
-                            market_context=market_context,
-                        )
+                        # 4. 调用AI进行风险分析 - 需要ResearchAssistant
+                        if ra is not None and hasattr(ra, "analyze_trade_risk"):
+                            ai_analysis = ra.analyze_trade_risk(
+                                symbol=symbol,
+                                trade_plan=trade_plan,
+                                risk_metrics=risk_metrics,
+                                market_context=market_context,
+                            )
+                        else:
+                            # 降级：跳过AI分析，只显示基础风险指标
+                            st.warning("ResearchAssistant不可用，只显示基础风险指标")
+                            ai_analysis = {
+                                "full_analysis": "AI分析不可用，请手动评估风险",
+                                "recommendation": "请参考基础风险指标自行决策",
+                                "risk_level": "UNKNOWN",
+                            }
 
                         # 5. 保存AI分析结果
                         risk_result = {

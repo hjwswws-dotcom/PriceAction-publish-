@@ -137,6 +137,69 @@ class DatabaseManager:
             print(f"Error getting recent news items: {e}")
             return []
 
+    def update_news_item_status(self, news_id: str, status: str):
+        """更新新闻条目状态
+
+        Args:
+            news_id: News item ID
+            status: New status (NEW, REFINED, COMPLETED, FAILED)
+        """
+        try:
+            self._ensure_connection()
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """
+                UPDATE news_items
+                SET status = ?, updated_at = ?
+                WHERE id = ?
+            """,
+                (status, int(datetime.now().timestamp() * 1000), news_id),
+            )
+            self._conn.commit()
+        except Exception as e:
+            print(f"Error updating news item status: {e}")
+
+    def get_refined_docs_for_analysis(self, limit: int = 10) -> List[Dict]:
+        """获取已提纯但尚未分析的文档
+
+        Args:
+            limit: Maximum number of docs to return
+
+        Returns:
+            List of refined doc dictionaries
+        """
+        try:
+            self._ensure_connection()
+            cursor = self._conn.cursor()
+
+            # 获取 refined_docs 中对应 news_items 状态为 REFINED 的文档
+            cursor.execute(
+                """
+                SELECT rd.*, ni.status as news_status
+                FROM refined_docs rd
+                JOIN news_items ni ON rd.news_id = ni.id
+                WHERE ni.status = 'REFINED'
+                ORDER BY rd.created_at DESC
+                LIMIT ?
+            """,
+                (limit,),
+            )
+
+            columns = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+
+            result = []
+            for row in rows:
+                doc = dict(zip(columns, row))
+                # 解析JSON字段
+                doc["related_assets"] = _safe_json_loads(doc.get("related_assets"), [])
+                result.append(doc)
+
+            return result
+        except Exception as e:
+            print(f"Error getting refined docs for analysis: {e}")
+            return []
+
     def save_refined_doc(self, doc) -> int:
         """Save a refined document to the database
 
@@ -382,6 +445,43 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error getting all signals: {e}")
             return []
+
+    def save_trading_signal(self, signal: Dict) -> int:
+        """保存交易信号"""
+        try:
+            self._ensure_connection()
+            cursor = self._conn.cursor()
+
+            cursor.execute(
+                """
+                INSERT INTO trading_signals
+                (symbol, timeframe, timestamp, signal_type, direction,
+                 entry_price, stop_loss, take_profit, confidence,
+                 pattern_name, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    signal.get("symbol"),
+                    signal.get("timeframe"),
+                    signal.get("timestamp"),
+                    signal.get("signal_type"),
+                    signal.get("direction"),
+                    signal.get("entry_price"),
+                    signal.get("stop_loss"),
+                    signal.get("take_profit"),
+                    signal.get("confidence"),
+                    signal.get("pattern_name"),
+                    signal.get("status", "ACTIVE"),
+                    signal.get("created_at"),
+                    signal.get("created_at"),  # updated_at 初始等于 created_at
+                ),
+            )
+
+            self._conn.commit()
+            return cursor.lastrowid if cursor.lastrowid else -1
+        except Exception as e:
+            print(f"Error saving trading signal: {e}")
+            return -1
 
     def get_warning_events(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Get recent warning events"""

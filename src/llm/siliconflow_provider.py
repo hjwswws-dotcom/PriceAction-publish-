@@ -1299,7 +1299,10 @@ K线:
 K线:
 {klines_15m}
 
-## 分析要求
+        ## 分析要求
+请严格按照以下 JSON 格式输出。**所有字段都是必填项 (Mandatory)**。
+如果某个字段没有明确数值，请根据当前分析估算一个合理值，不要留空。
+
 请按以下格式输出（每周期分析不超过200字）：
 
 ### 日线分析
@@ -1314,8 +1317,79 @@ K线:
 ### 多周期共振
 [趋势是否一致、置信度调整]
 
----JSON_DATA_START---
-{{"1d": {{"marketCycle": "...", "activeNarrative": {{"pattern_name": "...", "probability_value": 0.x}}}}, "1h": {{...}}, "15m": {{...}}, "multi_timeframe_analysis": {{"alignment": "ALIGNED|CONFLICT", "confidence_adj": -0.1}}}}
+        ---JSON_DATA_START---
+{{
+  "1d": {{
+    "marketCycle": "BULL_TREND|BEAR_TREND|TRADING_RANGE|TRANSITION",
+    "marketStructure": "BOS|CHOCH|LIQUIDITY_SWEEP|RANGE",
+    "signalConfidence": 80,
+    "activeNarrative": {{
+      "pattern_name": "具体形态名称",
+      "status": "FORMING|TRIGGERED|COMPLETED",
+      "probability_value": 0.75,
+      "key_levels": {{
+        "entry_trigger": 65000.0,
+        "invalidation_level": 64500.0,
+        "profit_target_1": 66000.0
+      }}
+    }},
+    "actionPlan": {{
+      "state": "WAIT|CONDITIONAL|ENTER_NOW",
+      "direction": "LONG|SHORT|NEUTRAL",
+      "entryPrice": 65000.0,
+      "stopLoss": 64500.0,
+      "targetPrice": 66000.0
+    }}
+  }},
+  "1h": {{
+    "marketCycle": "BULL_TREND|BEAR_TREND|TRADING_RANGE|TRANSITION",
+    "marketStructure": "BOS|CHOCH|LIQUIDITY_SWEEP|RANGE",
+    "signalConfidence": 70,
+    "activeNarrative": {{
+      "pattern_name": "具体形态名称",
+      "status": "FORMING|TRIGGERED|COMPLETED",
+      "probability_value": 0.6,
+      "key_levels": {{
+        "entry_trigger": 0.0,
+        "invalidation_level": 0.0,
+        "profit_target_1": 0.0
+      }}
+    }},
+    "actionPlan": {{
+      "state": "WAIT|CONDITIONAL|ENTER_NOW",
+      "direction": "LONG|SHORT|NEUTRAL",
+      "entryPrice": 0.0,
+      "stopLoss": 0.0,
+      "targetPrice": 0.0
+    }}
+  }},
+  "15m": {{
+    "marketCycle": "BULL_TREND|BEAR_TREND|TRADING_RANGE|TRANSITION",
+    "marketStructure": "BOS|CHOCH|LIQUIDITY_SWEEP|RANGE",
+    "signalConfidence": 60,
+    "activeNarrative": {{
+      "pattern_name": "具体形态名称",
+      "status": "FORMING|TRIGGERED|COMPLETED",
+      "probability_value": 0.6,
+      "key_levels": {{
+        "entry_trigger": 0.0,
+        "invalidation_level": 0.0,
+        "profit_target_1": 0.0
+      }}
+    }},
+    "actionPlan": {{
+      "state": "WAIT|CONDITIONAL|ENTER_NOW",
+      "direction": "LONG|SHORT|NEUTRAL",
+      "entryPrice": 0.0,
+      "stopLoss": 0.0,
+      "targetPrice": 0.0
+    }}
+  }},
+  "multi_timeframe_analysis": {{
+    "alignment": "ALIGNED|CONFLICT|NEUTRAL",
+    "confidence_adj": 0.0
+  }}
+}}
 ---JSON_DATA_END---"""
 
         return prompt
