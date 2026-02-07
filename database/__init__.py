@@ -141,17 +141,18 @@ class DatabaseManager:
         """Save a refined document to the database
 
         Args:
-            doc: Pydantic model or dict containing refined document data
+            doc: Pydantic model or dict containing refined doc data
 
         Returns:
-            Inserted document ID, or -1 on failure
+            Inserted doc ID, or -1 on failure
         """
         try:
             data = self._dict_from_item(doc)
 
             self._ensure_connection()
-            cursor = self._conn.execute(
-                """INSERT INTO refined_docs (
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """INSERT OR REPLACE INTO refined_docs (
                     id, news_id, url, title, markdown_content,
                     summary, key_entities, quotes, status,
                     error_message, created_at, updated_at
@@ -177,6 +178,25 @@ class DatabaseManager:
             print(f"Error saving refined doc: {e}")
             return -1
 
+    def get_refined_doc_by_news_id(self, news_id: str) -> Optional[Dict]:
+        """Get refined document by news ID
+
+        Args:
+            news_id: News item ID
+
+        Returns:
+            Refined doc dict or None
+        """
+        try:
+            self._ensure_connection()
+            cursor = self._conn.cursor()
+            cursor.execute("SELECT * FROM refined_docs WHERE news_id = ?", (news_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            print(f"Error getting refined doc for {news_id}: {e}")
+            return None
+
     def save_news_signal(self, signal) -> int:
         """Save a news signal to the database
 
@@ -191,12 +211,12 @@ class DatabaseManager:
 
             self._ensure_connection()
             cursor = self._conn.execute(
-                """INSERT INTO news_signals (
+                """INSERT OR REPLACE INTO news_signals (
                     signal_id, event_type, one_line_thesis, assets,
                     direction, confidence, timeframe, impact_volatility,
                     tail_risk, news_ids, evidence_urls, is_active,
-                    created_time_utc, expires_time_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    created_time_utc, expires_time_utc, severity
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data.get("signal_id", ""),
                     data.get("event_type", ""),
@@ -212,6 +232,7 @@ class DatabaseManager:
                     data.get("is_active", 1),
                     data.get("created_time_utc", int(datetime.now().timestamp() * 1000)),
                     data.get("expires_time_utc"),
+                    data.get("severity", "INFO"),
                 ),
             )
             self._conn.commit()
@@ -598,6 +619,16 @@ class DatabaseManager:
             signals = []
             for row in cursor.fetchall():
                 signal = dict(row)
+                # 补全前端缺失的 severity 字段逻辑
+                if not signal.get("severity"):
+                    impact = signal.get("impact_volatility", 1)
+                    tail = signal.get("tail_risk", 1)
+                    if tail >= 4 or impact >= 4:
+                        signal["severity"] = "CRITICAL"
+                    elif tail >= 3 or impact >= 3:
+                        signal["severity"] = "WARNING"
+                    else:
+                        signal["severity"] = "INFO"
                 signal["assets"] = _safe_json_loads(signal.get("assets"), [])
                 signal["news_ids"] = _safe_json_loads(signal.get("news_ids"), [])
                 signal["evidence_urls"] = _safe_json_loads(signal.get("evidence_urls"), [])

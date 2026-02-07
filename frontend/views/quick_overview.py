@@ -13,9 +13,9 @@ if str(project_root) not in sys.path:
 
 import streamlit as st
 from src.config.settings import get_settings
-from datetime import datetime
 from frontend.utils.parsers import parse_json_field
 from frontend.utils.db import get_db
+from frontend.utils.timezone import utc_ms_to_beijing_str
 
 
 def get_action_state_icon(state: str) -> tuple:
@@ -187,11 +187,20 @@ def show():
 
             # 折叠显示详细分析
             with st.expander("查看主观详细分析 (Subjective Analysis)"):
+                # ✅ 展示完整的AI分析文本（来自analysis_text字段）
+                analysis_text = state.get("analysis_text", "")
+                if analysis_text:
+                    st.markdown("**📖 AI完整分析**")
+                    st.markdown(analysis_text)
+                else:
+                    st.caption("无完整分析文本")
+
+                # 从activeNarrative提取的简要评论
                 comment = active.get("comment", "")
                 if comment:
-                    st.markdown(f"**AI分析**: {comment}")
+                    st.markdown(f"**简要点评**: {comment}")
                 else:
-                    st.caption("无详细分析文本")
+                    st.caption("无简要点评")
 
                 # 显示多周期共振信息
                 consensus_score = state.get("consensus_score", 0)
@@ -199,11 +208,9 @@ def show():
                 if consensus_score and consensus_direction != "NEUTRAL":
                     st.markdown(f"**多周期共振**: {consensus_direction} ({consensus_score:.0%})")
 
-            # 时间戳
+            # 使用标准时区转换工具
             last_updated = state.get("last_updated", 0)
-            if last_updated:
-                dt = datetime.fromtimestamp(last_updated / 1000)
-                st.caption(f"更新: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.caption(f"更新: {utc_ms_to_beijing_str(last_updated, '%Y-%m-%d %H:%M:%S')}")
 
         # 每个交易对之间的分隔线
         st.markdown("---")

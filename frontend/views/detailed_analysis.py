@@ -16,6 +16,8 @@ from src.config.settings import get_settings
 from frontend.components.chart_display import display_chart_with_controls
 from frontend.utils.parsers import parse_json_field
 from frontend.utils.db import get_db
+from frontend.utils.timezone import utc_ms_to_beijing_str
+from datetime import datetime
 
 
 def show():
@@ -74,12 +76,9 @@ def show():
         cycle_emoji = cycle_colors.get(cycle, "⚪")
         st.markdown(f"**市场周期:** {cycle_emoji} {cycle}")
     with col3:
+        # 使用标准时区转换工具
         last_updated = state.get("last_updated", 0)
-        if last_updated:
-            from datetime import datetime
-
-            dt = datetime.fromtimestamp(last_updated / 1000)
-            st.markdown(f"**更新时间:** {dt.strftime('%H:%M:%S')}")
+        st.markdown(f"**更新时间:** {utc_ms_to_beijing_str(last_updated, '%H:%M:%S')}")
 
     st.markdown("---")
 

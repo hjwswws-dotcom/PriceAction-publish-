@@ -32,180 +32,169 @@ def init_database():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # 检查 states 表是否存在
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='states'")
-    table_exists = cursor.fetchone()
+    # 🔧 强制重置：检查并删除所有旧表，确保 schema 绝对正确
+    tables_to_reset = [
+        "states",
+        "news_items",
+        "refined_docs",
+        "news_signals",
+        "trading_signals",
+        "trades",
+    ]
+    for table in tables_to_reset:
+        cursor.execute(f"DROP TABLE IF EXISTS {table}")
+        print(f"[DB] 已删除旧表: {table}")
 
-    if not table_exists:
-        # 创建完整的表结构
-        cursor.execute("""
-            CREATE TABLE states (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                timeframe TEXT,
-                timestamp INTEGER,
-                marketCycle TEXT,
-                marketStructure TEXT,
-                signalConfidence INTEGER,
-                activeNarrative TEXT,
-                alternativeNarrative TEXT,
-                actionPlan TEXT,
-                volumeProfile TEXT,
-                keyLevels TEXT,
-                analysis_text TEXT,
-                raw_response TEXT,
-                consensus_score REAL,
-                consensus_direction TEXT,
-                last_updated INTEGER
-            )
-        """)
+    # 🔧 强制重建：创建完整的 states 表结构
+    cursor.execute("""
+        CREATE TABLE states (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            timeframe TEXT,
+            timestamp INTEGER,
+            marketCycle TEXT,
+            marketStructure TEXT,
+            signalConfidence INTEGER,
+            activeNarrative TEXT,
+            alternativeNarrative TEXT,
+            actionPlan TEXT,
+            volumeProfile TEXT,
+            keyLevels TEXT,
+            analysis_text TEXT,
+            raw_response TEXT,
+            consensus_score REAL,
+            consensus_direction TEXT,
+            last_updated INTEGER
+        )
+    """)
 
-        # 创建索引
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_states_symbol ON states(symbol)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_states_timeframe ON states(timeframe)")
+    # 创建索引
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_states_symbol ON states(symbol)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_states_timeframe ON states(timeframe)")
 
-        conn.commit()
-        print("[DB] 数据库已初始化，states 表就绪")
+    # 🔧 强制重建：创建完整的 news_items 表
+    cursor.execute("""
+        CREATE TABLE news_items (
+            id TEXT PRIMARY KEY,
+            source TEXT,
+            source_item_id TEXT,
+            title TEXT,
+            url TEXT,
+            published_time_utc INTEGER,
+            ingest_time_utc INTEGER,
+            content TEXT,
+            language TEXT,
+            votes_positive INTEGER DEFAULT 0,
+            votes_negative INTEGER DEFAULT 0,
+            votes_installed INTEGER DEFAULT 0,
+            domain TEXT,
+            kind TEXT,
+            status TEXT DEFAULT 'NEW',
+            created_at INTEGER,
+            updated_at INTEGER
+        )
+    """)
 
-    # 检查并创建新闻相关表
-    tables_to_create = {
-        "news_items": """
-            CREATE TABLE IF NOT EXISTS news_items (
-                id TEXT PRIMARY KEY,
-                source TEXT,
-                source_item_id TEXT,
-                title TEXT,
-                url TEXT,
-                published_time_utc INTEGER,
-                ingest_time_utc INTEGER,
-                content TEXT,
-                language TEXT,
-                votes_positive INTEGER DEFAULT 0,
-                votes_negative INTEGER DEFAULT 0,
-                votes_installed INTEGER DEFAULT 0,
-                domain TEXT,
-                kind TEXT,
-                status TEXT DEFAULT 'NEW',
-                created_at INTEGER,
-                updated_at INTEGER
-            )
-        """,
-        "refined_docs": """
-            CREATE TABLE IF NOT EXISTS refined_docs (
-                id TEXT PRIMARY KEY,
-                news_id TEXT,
-                url TEXT,
-                title TEXT,
-                markdown_content TEXT,
-                summary TEXT,
-                key_entities TEXT,
-                quotes TEXT,
-                status TEXT,
-                error_message TEXT,
-                created_at INTEGER,
-                updated_at INTEGER
-            )
-        """,
-        "news_signals": """
-            CREATE TABLE IF NOT EXISTS news_signals (
-                signal_id TEXT PRIMARY KEY,
-                event_type TEXT,
-                one_line_thesis TEXT,
-                assets TEXT,
-                direction TEXT,
-                confidence INTEGER,
-                timeframe TEXT,
-                impact_volatility INTEGER,
-                tail_risk INTEGER,
-                news_ids TEXT,
-                evidence_urls TEXT,
-                is_active INTEGER DEFAULT 1,
-                created_time_utc INTEGER,
-                expires_time_utc INTEGER
-            )
-        """,
-        "trading_signals": """
-            CREATE TABLE IF NOT EXISTS trading_signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                timeframe TEXT,
-                timestamp INTEGER,
-                signal_type TEXT,
-                direction TEXT,
-                entry_price REAL,
-                stop_loss REAL,
-                take_profit REAL,
-                confidence INTEGER,
-                pattern_name TEXT,
-                signal_checks TEXT,
-                status TEXT DEFAULT 'ACTIVE',
-                created_at INTEGER,
-                updated_at INTEGER
-            )
-        """,
-        "trades": """
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                timeframe TEXT,
-                direction TEXT,
-                status TEXT DEFAULT 'ANALYZED',
-                entry_price REAL,
-                stop_loss REAL,
-                take_profit_1 REAL,
-                take_profit_2 REAL,
-                win_probability REAL,
-                position_size_actual REAL,
-                position_size_suggested REAL,
-                risk_amount_percent REAL,
-                risk_reward_expected REAL,
-                volatility_atr REAL,
-                volatility_atr_15m REAL,
-                volatility_atr_1h REAL,
-                volatility_atr_1d REAL,
-                sharpe_ratio_estimate REAL,
-                kelly_fraction REAL,
-                kelly_fraction_adjusted REAL,
-                max_drawdown_estimate REAL,
-                r_multiple_plan TEXT,
-                stop_distance_percent REAL,
-                ai_risk_analysis TEXT,
-                ai_recommendation TEXT,
-                risk_level TEXT,
-                analysis_timestamp INTEGER,
-                user_notes TEXT,
-                outcome_feedback TEXT,
-                created_at INTEGER,
-                updated_at INTEGER
-            )
-        """,
-    }
+    # 🔧 强制重建：创建完整的 refined_docs 表
+    cursor.execute("""
+        CREATE TABLE refined_docs (
+            id TEXT PRIMARY KEY,
+            news_id TEXT,
+            url TEXT,
+            title TEXT,
+            markdown_content TEXT,
+            summary TEXT,
+            key_entities TEXT,
+            quotes TEXT,
+            status TEXT,
+            error_message TEXT,
+            created_at INTEGER,
+            updated_at INTEGER
+        )
+    """)
 
-    for table_name, create_sql in tables_to_create.items():
-        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
-        if not cursor.fetchone():
-            cursor.execute(create_sql)
-            conn.commit()
-            print(f"[DB] 创建表 {table_name}")
+    # 🔧 强制重建：创建完整的 news_signals 表（包含 severity 字段）
+    cursor.execute("""
+        CREATE TABLE news_signals (
+            signal_id TEXT PRIMARY KEY,
+            event_type TEXT,
+            one_line_thesis TEXT,
+            assets TEXT,
+            direction TEXT,
+            confidence INTEGER,
+            timeframe TEXT,
+            impact_volatility INTEGER,
+            tail_risk INTEGER,
+            news_ids TEXT,
+            evidence_urls TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_time_utc INTEGER,
+            expires_time_utc INTEGER,
+            severity TEXT DEFAULT 'INFO'
+        )
+    """)
 
-    # 检查是否需要迁移（添加新列）
-    try:
-        cursor.execute("PRAGMA table_info(states)")
-        columns = [row[1] for row in cursor.fetchall()]
+    # 🔧 强制重建：创建 trading_signals 表
+    cursor.execute("""
+        CREATE TABLE trading_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            timeframe TEXT,
+            timestamp INTEGER,
+            signal_type TEXT,
+            direction TEXT,
+            entry_price REAL,
+            stop_loss REAL,
+            take_profit REAL,
+            confidence INTEGER,
+            pattern_name TEXT,
+            signal_checks TEXT,
+            status TEXT DEFAULT 'ACTIVE',
+            created_at INTEGER,
+            updated_at INTEGER
+        )
+    """)
 
-        # 添加缺失的列
-        new_columns = {
-            "consensus_score": "REAL DEFAULT 0.0",
-            "consensus_direction": "TEXT DEFAULT 'NEUTRAL'",
-        }
+    # 🔧 强制重建：创建 trades 表
+    cursor.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            timeframe TEXT,
+            direction TEXT,
+            status TEXT DEFAULT 'ANALYZED',
+            entry_price REAL,
+            stop_loss REAL,
+            take_profit_1 REAL,
+            take_profit_2 REAL,
+            win_probability REAL,
+            position_size_actual REAL,
+            position_size_suggested REAL,
+            risk_amount_percent REAL,
+            risk_reward_expected REAL,
+            volatility_atr REAL,
+            volatility_atr_15m REAL,
+            volatility_atr_1h REAL,
+            volatility_atr_1d REAL,
+            sharpe_ratio_estimate REAL,
+            kelly_fraction REAL,
+            kelly_fraction_adjusted REAL,
+            max_drawdown_estimate REAL,
+            r_multiple_plan TEXT,
+            stop_distance_percent REAL,
+            ai_risk_analysis TEXT,
+            ai_recommendation TEXT,
+            risk_level TEXT,
+            analysis_timestamp INTEGER,
+            user_notes TEXT,
+            outcome_feedback TEXT,
+            created_at INTEGER,
+            updated_at INTEGER
+        )
+    """)
 
-        for col_name, col_def in new_columns.items():
-            if col_name not in columns:
-                cursor.execute(f"ALTER TABLE states ADD COLUMN {col_name} {col_def}")
-                conn.commit()
-                print(f"[DB] 添加列 {col_name}")
-    except Exception as e:
-        print(f"[DB] 迁移检查跳过: {e}")
+    conn.commit()
+    print("[DB] 数据库已强制重置，所有表已重建")
 
     conn.close()
 
@@ -230,12 +219,12 @@ def _save_consolidated_state(
             "alternativeNarrative": json.dumps(
                 state.get("alternativeNarrative", {}), ensure_ascii=False
             ),
-            "analysis_text": analysis_text if tf == "15m" else state.get("analysis_text", ""),
+            "analysis_text": analysis_text,  # 🔧 移除 tf == "15m" 的判断，全周期保存
             "actionPlan": json.dumps(state.get("actionPlan", {}), ensure_ascii=False),
             "consensus_score": consensus.get("confidence", 0.0),
             "consensus_direction": consensus.get("direction", "NEUTRAL"),
-            "last_updated": int(time_module.time() * 1000),
-            "raw_response": raw_response if tf == "15m" else "",  # 只保存一份原始响应
+            "last_updated": int(time_module.time() * 1000),  # 保存 UTC 时间戳，前端负责时区转换
+            "raw_response": raw_response,  # 🔧 全周期保存原始响应，不做过滤
         }
 
         db._ensure_connection()
@@ -562,6 +551,9 @@ def run_news_pipeline(db, proxy):
 
 def run_backend():
     """启动后端分析服务"""
+    # ✅ 步骤 0: 最先初始化数据库（建表/重置表结构），在任何其他逻辑之前
+    init_database()
+
     from src.config.settings import get_settings
 
     try:
@@ -573,28 +565,9 @@ def run_backend():
     print("=" * 50)
     print("PriceAction Backend Service (Async Architecture)")
     print("=" * 50)
-    print(f"Environment: {settings.environment}")
-    print(f"Log Level: {settings.log_level}")
-    print(f"Monitored Symbols: {', '.join(settings.symbols)}")
-    print(f"Timeframes: {', '.join(settings.timeframes)}")
-    print(f"K-lines Limit: {settings.analysis_klines_limit}")
-    print(f"Exchange: {settings.exchange_id}")
-    print(f"Proxy: {settings.proxy or 'None'}")
-    print("=" * 50)
-    print("")
 
-    # 执行初始分析
-    print("执行初始分析...")
-    try:
-        run_analysis_cycle(settings)
-    except Exception as e:
-        print(f"[ERROR] 初始分析失败: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-    # 首次启动时执行一次新闻抓取
-    print("\n执行首次新闻抓取...")
+    # ✅ 步骤 1: 执行首次新闻抓取（此时表已经存在，不再报错）
+    print("\n[Step 1] 执行首次新闻抓取...")
     try:
         from database import DatabaseManager
 
@@ -604,6 +577,16 @@ def run_backend():
         print("首次新闻抓取完成")
     except Exception as e:
         print(f"[WARNING] 首次新闻抓取失败: {e}")
+
+    # ✅ 步骤 2: 执行市场初始分析
+    print("\n[Step 2] 执行初始市场分析...")
+    try:
+        run_analysis_cycle(settings)
+    except Exception as e:
+        print(f"[ERROR] 初始分析失败: {e}")
+        import traceback
+
+        traceback.print_exc()
 
     print("")
     print("后端服务运行中 (按 Ctrl+C 停止)")
